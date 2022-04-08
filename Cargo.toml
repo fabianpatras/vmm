@@ -6,3 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+hv = "0.1.2"
+kqueue = "1.0.4"
+vm-memory = { version = ">=0.8.0", features = ["backend-mmap"] }
+
+libc = "0.2.122"
