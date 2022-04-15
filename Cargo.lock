@@ -155,6 +155,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "inner_vmm"
+version = "0.1.0"
+dependencies = [
+ "hv",
+ "libc",
+ "linux-loader",
+ "vm-memory",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -180,6 +190,15 @@ checksum = "efbc0f03f9a775e9f6aed295c6a1ba2253c5757a9e03d55c6caa46a681abcddd"
 dependencies = [
  "cfg-if",
  "winapi",
+]
+
+[[package]]
+name = "linux-loader"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a5e77493808403a6bd56a301a64ea6b9342e36ea845044bf0dfdf56fe52fa08"
+dependencies = [
+ "vm-memory",
 ]
 
 [[package]]
@@ -309,11 +328,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 
 [[package]]
+name = "vm-memory"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "767ed8aaebbff902e02e6d3749dc2baef55e46565f8a6414a065e5baee4b4a81"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "vmm"
 version = "0.1.0"
 dependencies = [
  "hv",
+ "inner_vmm",
  "libc",
+ "linux-loader",
+ "vm-memory",
 ]
 
 [[package]]
