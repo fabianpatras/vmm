@@ -38,6 +38,7 @@ fn main() -> Result<(), Error> {
     // vcpu.test_protected_mode(&guest_memory).unwrap();
     vcpu.dump_vmcs()?;
     vcpu.vcpu.run()?;
+    vcpu.dump_vmcs()?;
     // vcpu.dump_vmcs()?;
     let rc = vcpu
         .vcpu

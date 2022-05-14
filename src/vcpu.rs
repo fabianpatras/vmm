@@ -57,9 +57,12 @@ const X86_PDE_RW: u64 = 1 << 1;
 const X86_PDE_PS: u64 = 1 << 7;
 
 // See Intel SDM3C 24.6.2
-const CTRL_CPU_BASED_HLT: u64 = (1 << 7);
-const CTRL_CPU_BASED_CR8_LOAD: u64 = (1 << 19);
-const CTRL_CPU_BASED_CR8_STORE: u64 = (1 << 20);
+const CTRL_CPU_BASED_HLT: u64 = 1 << 7;
+const CTRL_CPU_BASED_CR8_LOAD: u64 = 1 << 19;
+const CTRL_CPU_BASED_CR8_STORE: u64 = 1 << 20;
+
+// See Intel SDM3C 24.8.1
+const CTRL_VMENTRY_CONTROLS_IA32_MODE: u64 = 1 << 9;
 
 pub const VM_EXIT_VM_ENTRY_FAILURE: u64 = 1 << 31;
 
@@ -163,7 +166,10 @@ impl HvVcpu {
 
         cap = read_capability(Entry).unwrap();
         self.vcpu
-            .write_vmcs(CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0))
+            .write_vmcs(
+                CTRL_VMENTRY_CONTROLS,
+                cap2ctrl(cap, CTRL_VMENTRY_CONTROLS_IA32_MODE),
+            )
             .unwrap();
 
         cap = read_capability(Exit).unwrap();
@@ -174,9 +180,9 @@ impl HvVcpu {
 
         // CS 0xa09b => 0b1010_0000_1001_1011
         let null_seg = SegmentDescriptor::from(0, 0, 0);
-        let code_seg = SegmentDescriptor::from(0xa09b, 0, 0xfffff);
-        let data_seg = SegmentDescriptor::from(0xc093, 0, 0xfffff);
-        let tss_seg = SegmentDescriptor::from(0x808b, 0, 0xfffff);
+        let code_seg = SegmentDescriptor::from(0xa09b, 0, 0xffff);
+        let data_seg = SegmentDescriptor::from(0xc093, 0, 0xffff);
+        let tss_seg = SegmentDescriptor::from(0x808b, 0, 0xffff);
 
         // println!("code segment DPL [{}]", ((code_seg.0 & 0x0000_6000_0000_0000) >> 45) as u8);
         println!(
@@ -222,42 +228,42 @@ impl HvVcpu {
 
         self.vcpu.write_vmcs(GUEST_CS, 0x08).unwrap();
         self.vcpu.write_vmcs(GUEST_CS_BASE, 0x00).unwrap();
-        self.vcpu.write_vmcs(GUEST_CS_LIMIT, 0x000f_ffff).unwrap();
+        self.vcpu.write_vmcs(GUEST_CS_LIMIT, 0xffff).unwrap();
         self.vcpu.write_vmcs(GUEST_CS_AR, 0xa09b).unwrap();
 
         self.vcpu.write_vmcs(GUEST_DS, 0x10).unwrap();
         self.vcpu.write_vmcs(GUEST_DS_BASE, 0x00).unwrap();
-        self.vcpu.write_vmcs(GUEST_DS_LIMIT, 0x000f_ffff).unwrap();
+        self.vcpu.write_vmcs(GUEST_DS_LIMIT, 0xffff).unwrap();
         self.vcpu.write_vmcs(GUEST_DS_AR, 0xc093).unwrap();
 
         self.vcpu.write_vmcs(GUEST_ES, 0x10).unwrap();
         self.vcpu.write_vmcs(GUEST_ES_BASE, 0x00).unwrap();
-        self.vcpu.write_vmcs(GUEST_ES_LIMIT, 0x000f_ffff).unwrap();
+        self.vcpu.write_vmcs(GUEST_ES_LIMIT, 0xffff).unwrap();
         self.vcpu.write_vmcs(GUEST_ES_AR, 0xc093).unwrap();
 
         self.vcpu.write_vmcs(GUEST_FS, 0x10).unwrap();
         self.vcpu.write_vmcs(GUEST_FS_BASE, 0x00).unwrap();
-        self.vcpu.write_vmcs(GUEST_FS_LIMIT, 0x000f_ffff).unwrap();
+        self.vcpu.write_vmcs(GUEST_FS_LIMIT, 0xffff).unwrap();
         self.vcpu.write_vmcs(GUEST_FS_AR, 0xc093).unwrap();
 
         self.vcpu.write_vmcs(GUEST_GS, 0x10).unwrap();
         self.vcpu.write_vmcs(GUEST_GS_BASE, 0x00).unwrap();
-        self.vcpu.write_vmcs(GUEST_GS_LIMIT, 0x000f_ffff).unwrap();
+        self.vcpu.write_vmcs(GUEST_GS_LIMIT, 0xffff).unwrap();
         self.vcpu.write_vmcs(GUEST_GS_AR, 0xc093).unwrap();
 
         self.vcpu.write_vmcs(GUEST_SS, 0x10).unwrap();
         self.vcpu.write_vmcs(GUEST_SS_BASE, 0x00).unwrap();
-        self.vcpu.write_vmcs(GUEST_SS_LIMIT, 0x000f_ffff).unwrap();
+        self.vcpu.write_vmcs(GUEST_SS_LIMIT, 0xffff).unwrap();
         self.vcpu.write_vmcs(GUEST_SS_AR, 0xc093).unwrap();
 
         self.vcpu.write_vmcs(GUEST_TR, 0x18).unwrap();
         self.vcpu.write_vmcs(GUEST_TR_BASE, 0x00).unwrap();
-        self.vcpu.write_vmcs(GUEST_TR_LIMIT, 0x000f_ffff).unwrap();
+        self.vcpu.write_vmcs(GUEST_TR_LIMIT, 0xffff).unwrap();
         self.vcpu.write_vmcs(GUEST_TR_AR, 0x808b).unwrap();
 
         self.vcpu.write_vmcs(GUEST_LDTR_BASE, 0x00).unwrap();
-        self.vcpu.write_vmcs(GUEST_LDTR_LIMIT, 0x000f_ffff).unwrap();
-        self.vcpu.write_vmcs(GUEST_LDTR_AR, 0xc092).unwrap();
+        self.vcpu.write_vmcs(GUEST_LDTR_LIMIT, 0x00).unwrap();
+        self.vcpu.write_vmcs(GUEST_LDTR_AR, 0x8082).unwrap();
 
         // self.vcpu.write_register(CS, code_seg.0).unwrap();
         // self.vcpu.write_register(DS, data_seg.0).unwrap();
@@ -265,7 +271,6 @@ impl HvVcpu {
         // self.vcpu.write_register(FS, data_seg.0).unwrap();
         // self.vcpu.write_register(GS, data_seg.0).unwrap();
         // self.vcpu.write_register(SS, data_seg.0).unwrap();
-        // self.vcpu.write_register(TR, tss_seg.0).unwrap();
 
         // self.vcpu.write_register(CS, value)
 
@@ -336,7 +341,7 @@ impl HvVcpu {
         let mut vmentry_control = self.vcpu.read_vmcs(CTRL_VMENTRY_CONTROLS).unwrap();
         println!("vm entry control [{:#b}]", vmentry_control);
         let val = 1 << 9;
-        vmentry_control |= val;
+        // vmentry_control |= val;
         println!(
             "vm entry control IA-32e mode guest [{}]",
             (vmentry_control & (1 << 9)) != 0
@@ -346,13 +351,13 @@ impl HvVcpu {
             (vmentry_control & (1 << 15)) != 0
         );
 
-        self.vcpu
-            .write_vmcs(CTRL_VMENTRY_CONTROLS, vmentry_control)
-            .unwrap();
+        // self.vcpu
+        //     .write_vmcs(CTRL_VMENTRY_CONTROLS, vmentry_control)
+        //     .unwrap();
 
         // citim din nou vmentry_control
-        vmentry_control = self.vcpu.read_vmcs(CTRL_VMENTRY_CONTROLS).unwrap();
-        println!("vm entry control [{:#b}]", vmentry_control);
+        // vmentry_control = self.vcpu.read_vmcs(CTRL_VMENTRY_CONTROLS).unwrap();
+        // println!("vm entry control [{:#b}]", vmentry_control);
 
         efer = self.vcpu.read_vmcs(GUEST_IA32_EFER).unwrap();
 
@@ -413,6 +418,10 @@ impl HvVcpu {
         let ia32_sysenter_esp = self.vcpu.read_vmcs(GUEST_SYSENTER_ESP).unwrap();
 
         println!("[HOST_IA32_SYSENTER_ESP][{:#b}]", ia32_sysenter_esp);
+
+
+        self.vcpu.write_vmcs(GUEST_LINK_POINTER, 0xffff_ffff_ffff_ffff).unwrap();
+        // self.vcpu.write_vmcs(GUEST_LINK_POINTER, 0x00).unwrap();
 
         Ok(())
     }
@@ -545,6 +554,7 @@ impl HvVcpu {
         print_vmcs!(self, "CPU_BASED2_CONTROLS", CTRL_CPU_BASED2);
         print_vmcs!(self, "VMENTRY_CONTROLS", CTRL_VMENTRY_CONTROLS);
         print_vmcs!(self, "VMEXIT_CONTROLS", CTRL_VMEXIT_CONTROLS);
+        print_vmcs!(self, "VMENTRY_IRQ_INFO", CTRL_VMENTRY_IRQ_INFO);
 
         println!("");
         println!("~~~~ Exit reason ~~~~");
@@ -596,6 +606,12 @@ impl HvVcpu {
         print_vmcs!(self, "GS_AR", GUEST_GS_AR);
 
         println!("");
+        print_vmcs!(self, "SS_SELECTOR", GUEST_SS);
+        print_vmcs!(self, "SS_BASE", GUEST_SS_BASE);
+        print_vmcs!(self, "SS_LIMIT", GUEST_SS_LIMIT);
+        print_vmcs!(self, "SS_AR", GUEST_SS_AR);
+
+        println!("");
         print_vmcs!(self, "TR_SELECTOR", GUEST_TR);
         print_vmcs!(self, "TR_BASE", GUEST_TR_BASE);
         print_vmcs!(self, "TR_LIMIT", GUEST_TR_LIMIT);
@@ -612,6 +628,7 @@ impl HvVcpu {
         println!("");
         print_vmcs!(self, "LDTR_BASE", GUEST_LDTR_BASE);
         print_vmcs!(self, "LDTR_LIMIT", GUEST_LDTR_LIMIT);
+        print_vmcs!(self, "LDTR_AR", GUEST_LDTR_AR);
 
         println!("");
         print_vmcs!(self, "RIP", GUEST_RIP);
@@ -627,6 +644,8 @@ impl HvVcpu {
         print_vmcs!(self, "IA32_EFER", GUEST_IA32_EFER);
         print_vmcs!(self, "IA32_DEBUGCTL", GUEST_IA32_DEBUGCTL);
         print_vmcs!(self, "IA32_PAT", GUEST_IA32_PAT);
+        print_vmcs!(self, "ACTIVITY_STATE", GUEST_ACTIVITY_STATE);
+        print_vmcs!(self, "LINK_POINTER", GUEST_LINK_POINTER);
 
         println!("");
         print_register!(self, "RIP", RIP);
