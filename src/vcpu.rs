@@ -37,7 +37,9 @@ const PDE_START: u64 = 0xB000;
 const X86_CR0_PE: u64 = 1 << 0;
 const X86_CR0_ET: u64 = 1 << 4;
 const X86_CR0_PG: u64 = 1 << 31;
+
 const X86_CR4_PAE: u64 = 1 << 5;
+const X86_CR4_VMXE: u64 = 1 << 13;
 
 // See Intel SDM3A 2.2.1 Table 2-1
 pub const X86_IA32_EFER_LME: u64 = 1 << 8;
@@ -276,7 +278,7 @@ impl HvVcpu {
 
         // enables Physical Address Extension
         // See Intel SDM3A 4.4.2 Table 4-5
-        let cr4 = X86_CR4_PAE;
+        let cr4 = X86_CR4_PAE | X86_CR4_VMXE;
         self.vcpu.write_vmcs(GUEST_CR4, cr4).unwrap();
 
         // See Intel SDM3A 2.5
@@ -662,6 +664,12 @@ impl HvVcpu {
         print_register!(self, "RDI", RDI);
         print_register!(self, "RSP", RSP);
         print_register!(self, "RBP", RBP);
+
+
+        println!("~~~~~ Host State ~~~~");
+        // print_vmcs!(self, "CR0", HOST_CR0);
+        print_vmcs!(self, "CR3", HOST_CR3);
+        print_vmcs!(self, "CR4", HOST_CR4);
 
         println!("~~~~ EO VMCS Dump ~~~");
         Ok(())
