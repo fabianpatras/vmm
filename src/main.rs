@@ -26,14 +26,13 @@ fn main() -> Result<(), Error> {
             .expect("Could not init memory with `vm-memory`");
 
     // vcpu.dump_vmcs()?;
-    vcpu.init(&guest_memory).unwrap();
+    // vcpu.init(&guest_memory).unwrap();
     println!("init done");
 
-    // let vmentry_control = vcpu.vcpu.read_vmcs(Vmcs::CTRL_VMENTRY_CONTROLS)?;
 
-    // println!("-->vm entry control [{:b}]", vmentry_control);
-    // 1001 0001 1111 1111
-    //        |
+    vcpu.reset().unwrap();
+    vcpu.real_mode_setup().unwrap();
+    // vcpu.enter_protected_mode(&guest_memory).unwrap();
 
     // vcpu.test_protected_mode(&guest_memory).unwrap();
     vcpu.dump_vmcs()?;

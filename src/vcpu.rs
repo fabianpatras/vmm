@@ -35,7 +35,11 @@ const PDE_START: u64 = 0xB000;
 
 // See Intel SDM3A 2.5
 const X86_CR0_PE: u64 = 1 << 0;
+const X86_CR0_MP: u64 = 1 << 1;
 const X86_CR0_ET: u64 = 1 << 4;
+const X86_CR0_NE: u64 = 1 << 5;
+const X86_CR0_WP: u64 = 1 << 16;
+const X86_CR0_AM: u64 = 1 << 18;
 const X86_CR0_PG: u64 = 1 << 31;
 
 const X86_CR4_PAE: u64 = 1 << 5;
@@ -48,14 +52,17 @@ pub const X86_IA32_EFER_LMA: u64 = 1 << 10;
 // See Intel SDM3A 4.5.4 Table 4-15
 const X86_PLM4E_P: u64 = 1 << 0;
 const X86_PLM4E_RW: u64 = 1 << 1;
+const X86_PLM4E_U: u64 = 1 << 2;
 
 // See Intel SDM3A 4.5.4 Table 4-17
 const X86_PDPTE_P: u64 = 1 << 0;
 const X86_PDPTE_RW: u64 = 1 << 1;
+const X86_PDPTE_U: u64 = 1 << 2;
 
 // See Intel SDM3A 4.5.4 Table 4-18
 const X86_PDE_P: u64 = 1 << 0;
 const X86_PDE_RW: u64 = 1 << 1;
+const X86_PDE_U: u64 = 1 << 2;
 const X86_PDE_PS: u64 = 1 << 7;
 
 // See Intel SDM3C 24.6.2
@@ -95,6 +102,31 @@ macro_rules! print_register {
         res
     }};
 }
+
+macro_rules! rreg {
+    ($vcpu:expr, $register_field:expr) => {{
+        $s.vcpu.read_register($register_field).unwrap()
+    }};
+}
+
+macro_rules! wreg {
+    ($vcpu:expr, $register_field:expr, $value:expr) => {{
+        $vcpu.write_register($register_field, $value).unwrap();
+    }};
+}
+
+macro_rules! rvmcs {
+    ($vcpu:expr, $vmcs_field:expr) => {{
+        $s.vcpu.read_vmcs($vmcs_field).unwrap()
+    }};
+}
+
+macro_rules! wvmcs {
+    ($vcpu:expr, $vmcs_field:expr, $value:expr) => {{
+        $vcpu.write_vmcs($vmcs_field, $value).unwrap();
+    }};
+}
+
 #[derive(Copy, Clone, Default, Debug)]
 struct SegmentDescriptor(u64);
 
@@ -139,6 +171,121 @@ impl HvVcpu {
         let vcpu = Arc::new(vm).create_cpu().unwrap();
 
         Ok(HvVcpu { vcpu })
+    }
+
+    pub fn reset(&self) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+
+        wreg!(vcpu, RAX, 0x0);
+        wreg!(vcpu, RBX, 0x0);
+        wreg!(vcpu, RCX, 0x0);
+        wreg!(vcpu, RDX, 0x0);
+
+        wreg!(vcpu, RSP, 0x0);
+        wreg!(vcpu, RBP, 0x0);
+
+        wreg!(vcpu, RSI, 0x0);
+        wreg!(vcpu, RDI, 0x0);
+
+        wreg!(vcpu, RIP, 0x0);
+        wreg!(vcpu, RFLAGS, 0x0);
+
+        Ok(())
+    }
+
+    pub fn real_mode_setup(&self) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+
+        let mut cap: u64;
+
+        cap = read_capability(ProcBased).unwrap();
+
+        wvmcs!(
+            vcpu,
+            CTRL_CPU_BASED,
+            cap2ctrl(
+                cap,
+                CTRL_CPU_BASED_HLT | CTRL_CPU_BASED_CR8_LOAD | CTRL_CPU_BASED_CR8_STORE,
+            )
+        );
+
+        cap = read_capability(ProcBased2).unwrap();
+        wvmcs!(vcpu, CTRL_CPU_BASED2, cap2ctrl(cap, 0));
+
+        cap = read_capability(Entry).unwrap();
+        wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0));
+
+        cap = read_capability(Exit).unwrap();
+        wvmcs!(vcpu, CTRL_VMEXIT_CONTROLS, cap2ctrl(cap, 0));
+
+        wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
+        wvmcs!(vcpu, CTRL_CR0_MASK, 0x60000000);
+        wvmcs!(vcpu, CTRL_CR0_SHADOW, 0x0);
+        wvmcs!(vcpu, CTRL_CR4_MASK, 0x0);
+        wvmcs!(vcpu, CTRL_CR4_SHADOW, 0x0);
+
+        // Code segment
+        wvmcs!(vcpu, GUEST_CS, 0x0);
+        wvmcs!(vcpu, GUEST_CS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_CS_AR, 0x9b);
+        wvmcs!(vcpu, GUEST_CS_BASE, 0x0);
+
+        // Data segment
+        wvmcs!(vcpu, GUEST_DS, 0x0);
+        wvmcs!(vcpu, GUEST_DS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_DS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_DS_BASE, 0x0);
+
+        // Stack segment
+        wvmcs!(vcpu, GUEST_SS, 0x0);
+        wvmcs!(vcpu, GUEST_SS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_SS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_SS_BASE, 0x0);
+
+        // Extra segment
+        wvmcs!(vcpu, GUEST_ES, 0x0);
+        wvmcs!(vcpu, GUEST_ES_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_ES_AR, 0x93);
+        wvmcs!(vcpu, GUEST_ES_BASE, 0x0);
+
+        // F segment
+        wvmcs!(vcpu, GUEST_FS, 0x0);
+        wvmcs!(vcpu, GUEST_FS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_FS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_FS_BASE, 0x0);
+
+        // G segment
+        wvmcs!(vcpu, GUEST_GS, 0x0);
+        wvmcs!(vcpu, GUEST_GS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_GS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_GS_BASE, 0x0);
+
+        // Task state segment
+        wvmcs!(vcpu, GUEST_TR, 0x0);
+        wvmcs!(vcpu, GUEST_TR_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_TR_AR, 0x83);
+        wvmcs!(vcpu, GUEST_TR_BASE, 0x0);
+
+        // Local Descriptor Table
+        wvmcs!(vcpu, GUEST_LDTR, 0x0);
+        wvmcs!(vcpu, GUEST_LDTR_LIMIT, 0x0);
+        wvmcs!(vcpu, GUEST_LDTR_AR, 0x10000); // (1<<17)
+        wvmcs!(vcpu, GUEST_LDTR_BASE, 0x0);
+
+        // GDTR Global Description Table Register
+        wvmcs!(vcpu, GUEST_GDTR_LIMIT, 0x0);
+        wvmcs!(vcpu, GUEST_GDTR_BASE, 0x0);
+
+        // IDTR Interrupt Description Table Register
+        wvmcs!(vcpu, GUEST_IDTR_LIMIT, 0x0);
+        wvmcs!(vcpu, GUEST_IDTR_BASE, 0x0);
+
+        // CR stuff
+        wvmcs!(vcpu, GUEST_CR0, 0x20);
+        wvmcs!(vcpu, GUEST_CR3, 0x0);
+        wvmcs!(vcpu, GUEST_CR4, 0x2000); // CR4.VMXE = (1 << 13)
+
+        Ok(())
     }
 
     pub fn init<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
@@ -299,7 +446,7 @@ impl HvVcpu {
         // this refers a region of 512GB
         guest_memory
             .write_obj(
-                boot_pdpte_addr.raw_value() | X86_PLM4E_P | X86_PLM4E_RW,
+                boot_pdpte_addr.raw_value() | X86_PLM4E_P | X86_PLM4E_RW | X86_PLM4E_U,
                 boot_pml4_addr,
             )
             .unwrap();
@@ -308,7 +455,7 @@ impl HvVcpu {
         // writing a single PDPT Entry (Page Directory) with Present bit and Write Bit into PDP Table
         guest_memory
             .write_obj(
-                boot_pde_addr.raw_value() | X86_PDPTE_P | X86_PDPTE_RW,
+                boot_pde_addr.raw_value() | X86_PDPTE_P | X86_PDPTE_RW | X86_PDPTE_U,
                 boot_pdpte_addr,
             )
             .unwrap();
@@ -316,7 +463,7 @@ impl HvVcpu {
         // See Intel SDM3A 4.5.4 Table 4-18
         // writing 512 2MB Pages with Present bit, Write Bit and Page Size bit into Page Directory
         // This assumes that the CPU supports 2MB pages (`sysctl machdep.cpu.features` has "PSE").
-        let page_flags = X86_PDE_P | X86_PDE_RW | X86_PDE_PS;
+        let page_flags = X86_PDE_P | X86_PDE_RW | X86_PDE_U | X86_PDE_PS;
         for i in 0..512 {
             guest_memory
                 .write_obj((i << 21) | page_flags, boot_pde_addr.unchecked_add(i * 8))
@@ -325,7 +472,14 @@ impl HvVcpu {
 
         // this enables protected mode and paging
         // See Intel SDM3A 2.5 & 9.9.1
-        let cr0 = X86_CR0_PE | X86_CR0_ET | X86_CR0_PG;
+        // let cr0 = X86_CR0_PE | X86_CR0_ET | X86_CR0_PG;
+        let cr0 = X86_CR0_PE
+            | X86_CR0_MP
+            | X86_CR0_ET
+            | X86_CR0_NE
+            | X86_CR0_WP
+            | X86_CR0_AM
+            | X86_CR0_PG;
         self.vcpu.write_vmcs(GUEST_CR0, cr0).unwrap();
 
         // enabling IA-32e mode -> 4-Level Paging
@@ -336,22 +490,22 @@ impl HvVcpu {
         println!("bit LMA [{}]", (efer & X86_IA32_EFER_LMA) != 0);
 
         efer |= X86_IA32_EFER_LME;
-        // efer |= X86_IA32_EFER_LMA;
+        efer |= X86_IA32_EFER_LMA;
         self.vcpu.write_vmcs(GUEST_IA32_EFER, efer).unwrap();
 
         // See Intel SDM3C 24.8 VM-ENTRY CONTROL FIELDS
-        let mut vmentry_control = self.vcpu.read_vmcs(CTRL_VMENTRY_CONTROLS).unwrap();
-        println!("vm entry control [{:#b}]", vmentry_control);
-        let val = 1 << 9;
-        // vmentry_control |= val;
-        println!(
-            "vm entry control IA-32e mode guest [{}]",
-            (vmentry_control & (1 << 9)) != 0
-        );
-        println!(
-            "vm entry control LOAD EFER [{}]",
-            (vmentry_control & (1 << 15)) != 0
-        );
+        // let mut vmentry_control = self.vcpu.read_vmcs(CTRL_VMENTRY_CONTROLS).unwrap();
+        // println!("vm entry control [{:#b}]", vmentry_control);
+        // // let val = 1 << 9;
+        // // vmentry_control |= val;
+        // println!(
+        //     "vm entry control IA-32e mode guest [{}]",
+        //     (vmentry_control & (1 << 9)) != 0
+        // );
+        // println!(
+        //     "vm entry control LOAD EFER [{}]",
+        //     (vmentry_control & (1 << 15)) != 0
+        // );
 
         // self.vcpu
         //     .write_vmcs(CTRL_VMENTRY_CONTROLS, vmentry_control)
@@ -361,10 +515,10 @@ impl HvVcpu {
         // vmentry_control = self.vcpu.read_vmcs(CTRL_VMENTRY_CONTROLS).unwrap();
         // println!("vm entry control [{:#b}]", vmentry_control);
 
-        efer = self.vcpu.read_vmcs(GUEST_IA32_EFER).unwrap();
+        // efer = self.vcpu.read_vmcs(GUEST_IA32_EFER).unwrap();
 
-        println!("bit LME [{}]", (efer & X86_IA32_EFER_LME) != 0);
-        println!("bit LMA [{}]", (efer & X86_IA32_EFER_LMA) != 0);
+        // println!("bit LME [{}]", (efer & X86_IA32_EFER_LME) != 0);
+        // println!("bit LMA [{}]", (efer & X86_IA32_EFER_LMA) != 0);
 
         // let mut cr0_2 = self.vcpu.read_vmcs(GUEST_CR0).unwrap();
 
@@ -375,11 +529,11 @@ impl HvVcpu {
         //     ((code_seg.0 & 0x0020_0000_0000_0000) >> 53) as u8
         // );
 
-        let vmentry_interruption_info = self.vcpu.read_vmcs(CTRL_VMENTRY_IRQ_INFO).unwrap();
-        println!(
-            "vm entry interruption info [{:#b}]",
-            vmentry_interruption_info
-        );
+        // let vmentry_interruption_info = self.vcpu.read_vmcs(CTRL_VMENTRY_IRQ_INFO).unwrap();
+        // println!(
+        //     "vm entry interruption info [{:#b}]",
+        //     vmentry_interruption_info
+        // );
 
         let rflags = 0x0000_0000_0000_0002_u64;
         self.vcpu.write_vmcs(GUEST_RFLAGS, rflags).unwrap();
@@ -421,9 +575,19 @@ impl HvVcpu {
 
         println!("[HOST_IA32_SYSENTER_ESP][{:#b}]", ia32_sysenter_esp);
 
-
-        self.vcpu.write_vmcs(GUEST_LINK_POINTER, 0xffff_ffff_ffff_ffff).unwrap();
+        self.vcpu
+            .write_vmcs(GUEST_LINK_POINTER, 0xffff_ffff_ffff_ffff)
+            .unwrap();
         // self.vcpu.write_vmcs(GUEST_LINK_POINTER, 0x00).unwrap();
+
+        let rip = self
+            .vcpu
+            .write_register(RIP, 0x10_0000)
+            .expect("Failed to read exit reason");
+
+        guest_memory
+            .write(&[0xF4], GuestAddress(0x10_0000))
+            .unwrap();
 
         Ok(())
     }
@@ -471,6 +635,83 @@ impl HvVcpu {
 
         // println!("-->bit pe [{}]", (cr0_2 & X86_CR0_PE) != 0);
         // println!("-->bit pg [{}]", (cr0_2 & X86_CR0_PG) != 0);
+
+        let cr0_mask = self.vcpu.read_shadow_vmcs(CTRL_CR0_MASK).unwrap();
+        let cr0_shadow = self.vcpu.read_shadow_vmcs(CTRL_CR0_SHADOW).unwrap();
+
+        println!("CR0 MASK [{:x}]", cr0_mask);
+        println!("CR0 SHADOW [{:x}]", cr0_shadow);
+
+        // for _ in 1..2 {
+        let res = self.vcpu.run();
+        println!("{:?}", res);
+        res.unwrap();
+        let rc = self
+            .vcpu
+            .read_vmcs(RO_EXIT_REASON)
+            .expect("Failed to read exit reason");
+
+        println!("rc = [{}]", rc);
+
+        println!(
+            "VM entry failure [{}]",
+            (rc & VM_EXIT_VM_ENTRY_FAILURE) != 0
+        );
+        println!(
+            "VM entry exit code [{:#?}]",
+            (rc ^ VM_EXIT_VM_ENTRY_FAILURE)
+        );
+
+        // Intel SDE 3C - 27.2.1
+        let exit_qual = self
+            .vcpu
+            .read_vmcs(RO_EXIT_QUALIFIC)
+            .expect("Failed to read exit reason");
+
+        println!(
+            "Am primit (Exit reason; Exit Qual) ({:#x}, {:#x})",
+            rc, exit_qual
+        );
+        // 0111 1000 0100
+
+        let rax = self
+            .vcpu
+            .read_register(RAX)
+            .expect("Failed to read exit reason");
+
+        println!("Avem RAX = [0x{:X}]", rax);
+        let rip = self
+            .vcpu
+            .read_register(RIP)
+            .expect("Failed to read exit reason");
+
+        println!("Avem RIP = [0x{:X}]", rip);
+        // }
+
+        Ok(())
+    }
+
+    pub fn enter_protected_mode<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
+        let code_file = File::open("/Users/ec2-user/repos/vmm/prot_mode").unwrap();
+
+        let mut reader = BufReader::new(code_file);
+        let mut buffer = Vec::new();
+
+        reader.read_to_end(&mut buffer).unwrap();
+
+        let code_address = GuestAddress(0x0);
+
+        for (idx, value) in buffer.iter().enumerate() {
+            let addr = code_address.checked_add(idx as u64).unwrap();
+            println!(
+                "writing byte [0x{:02X}] to address [0x{:02X}]",
+                value, addr.0
+            );
+            guest_memory.write_obj(*value, addr).unwrap();
+        }
+
+        self.vcpu.write_register(RIP, 0x0).unwrap();
+        // let cr0_2 = self.vcpu.read_vmcs(GUEST_CR0).unwrap();
 
         let cr0_mask = self.vcpu.read_shadow_vmcs(CTRL_CR0_MASK).unwrap();
         let cr0_shadow = self.vcpu.read_shadow_vmcs(CTRL_CR0_SHADOW).unwrap();
