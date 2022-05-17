@@ -75,6 +75,12 @@ const CTRL_VMENTRY_CONTROLS_IA32_MODE: u64 = 1 << 9;
 
 pub const VM_EXIT_VM_ENTRY_FAILURE: u64 = 1 << 31;
 
+// See Intel SDM4 Table 2-2
+const IA32_VMX_CR0_FIXED0: u32 = 0x486;
+const IA32_VMX_CR0_FIXED1: u32 = 0x487;
+const IA32_VMX_CR4_FIXED0: u32 = 0x488;
+const IA32_VMX_CR4_FIXED1: u32 = 0x489;
+
 // https://developer.apple.com/documentation/hypervisor/3727856-model-specific_registers?language=objc
 const HV_MSR_IA32_SYSENTER_EIP: u32 = 0x00000176;
 
@@ -124,6 +130,19 @@ macro_rules! rvmcs {
 macro_rules! wvmcs {
     ($vcpu:expr, $vmcs_field:expr, $value:expr) => {{
         $vcpu.write_vmcs($vmcs_field, $value).unwrap();
+    }};
+}
+
+macro_rules! rmsr {
+    ($vcpu:expr, $msr_index:expr) => {{
+        $vcpu.read_msr($msr_index).unwrap()
+    }};
+}
+
+macro_rules! print_msr {
+    ($s:expr, $name:expr ,$msr_index:expr) => {{
+        // let res: u64 = $s.vcpu.read_vmcs($msr_index).unwrap();
+        color_print!($name, rmsr!($s.vcpu, $msr_index));
     }};
 }
 
@@ -295,7 +314,20 @@ impl HvVcpu {
         // - initilizeze GDTR - GDT Register
         // - Control Registers CR1 -> CR4
 
-        let mut cap: u64 = read_capability(PinBased).unwrap();
+        let mut cap: u64;
+
+        cap = read_capability(PinBased).unwrap();
+
+        // println!("[pin cap ][{:#X}]", cap);
+        // cap = self.vcpu.read_vmcs(CTRL_PIN_BASED).unwrap();
+
+        println!("[pin ctrl 1][{:#X}]", cap);
+        self.vcpu
+            .write_vmcs(CTRL_PIN_BASED, cap2ctrl(cap, 0))
+            .unwrap();
+
+        // self.vcpu.read_vmcs(CTRL_PIN_BASED).unwrap();
+        // println!("[pin ctrl 2][{:#X}]", cap);
 
         cap = read_capability(ProcBased).unwrap();
         self.vcpu
@@ -425,7 +457,10 @@ impl HvVcpu {
 
         // enables Physical Address Extension
         // See Intel SDM3A 4.4.2 Table 4-5
-        let cr4 = X86_CR4_PAE | X86_CR4_VMXE;
+        let mut cr4 = 0x0_u64;
+        // cd4 |= X86_CR4_PAE;
+        // let mut cr4 = X86_CR4_PAE;
+        cr4 |= X86_CR4_VMXE;
         self.vcpu.write_vmcs(GUEST_CR4, cr4).unwrap();
 
         // See Intel SDM3A 2.5
@@ -490,7 +525,7 @@ impl HvVcpu {
         println!("bit LMA [{}]", (efer & X86_IA32_EFER_LMA) != 0);
 
         efer |= X86_IA32_EFER_LME;
-        efer |= X86_IA32_EFER_LMA;
+        // efer |= X86_IA32_EFER_LMA;
         self.vcpu.write_vmcs(GUEST_IA32_EFER, efer).unwrap();
 
         // See Intel SDM3C 24.8 VM-ENTRY CONTROL FIELDS
@@ -574,6 +609,10 @@ impl HvVcpu {
         let ia32_sysenter_esp = self.vcpu.read_vmcs(GUEST_SYSENTER_ESP).unwrap();
 
         println!("[HOST_IA32_SYSENTER_ESP][{:#b}]", ia32_sysenter_esp);
+
+        let guest_link_pointer = self.vcpu.read_vmcs(GUEST_LINK_POINTER).unwrap();
+
+        println!("[guest_link_pointer][{:#X}]", guest_link_pointer);
 
         self.vcpu
             .write_vmcs(GUEST_LINK_POINTER, 0xffff_ffff_ffff_ffff)
@@ -781,11 +820,11 @@ impl HvVcpu {
         cap = read_capability(ProcBased2).unwrap();
         color_print!("PROC BASED2 CAP", cap);
 
-        cap = read_capability(Entry).unwrap();
-        color_print!("ENTRY CAP", cap);
-
         cap = read_capability(Exit).unwrap();
         color_print!("EXIT CAP", cap);
+
+        cap = read_capability(Entry).unwrap();
+        color_print!("ENTRY CAP", cap);
 
         cap = read_capability(PreemptionTimer).unwrap();
         color_print!("TIMER CAP", cap);
@@ -795,9 +834,10 @@ impl HvVcpu {
         print_vmcs!(self, "PIN_BASED_CONTROLS", CTRL_PIN_BASED);
         print_vmcs!(self, "CPU_BASED_CONTROLS", CTRL_CPU_BASED);
         print_vmcs!(self, "CPU_BASED2_CONTROLS", CTRL_CPU_BASED2);
-        print_vmcs!(self, "VMENTRY_CONTROLS", CTRL_VMENTRY_CONTROLS);
         print_vmcs!(self, "VMEXIT_CONTROLS", CTRL_VMEXIT_CONTROLS);
+        print_vmcs!(self, "VMENTRY_CONTROLS", CTRL_VMENTRY_CONTROLS);
         print_vmcs!(self, "VMENTRY_IRQ_INFO", CTRL_VMENTRY_IRQ_INFO);
+        print_vmcs!(self, "EXECUTION_BITMAP", CTRL_EXC_BITMAP);
 
         println!("");
         println!("~~~~ Exit reason ~~~~");
@@ -809,6 +849,11 @@ impl HvVcpu {
         println!("~~~~ Guest State ~~~~");
         print_vmcs!(self, "CR0", GUEST_CR0);
         print_vmcs!(self, "CR3", GUEST_CR3);
+        print_vmcs!(self, "CR3_COUNT", CTRL_CR3_COUNT);
+        print_vmcs!(self, "CR3_TARGET0", CTRL_CR3_VALUE0);
+        print_vmcs!(self, "CR3_TARGET1", CTRL_CR3_VALUE1);
+        print_vmcs!(self, "CR3_TARGET2", CTRL_CR3_VALUE2);
+        print_vmcs!(self, "CR3_TARGET3", CTRL_CR3_VALUE3);
         print_vmcs!(self, "CR4", GUEST_CR4);
         print_vmcs!(self, "DR7", GUEST_DR7);
 
@@ -817,6 +862,12 @@ impl HvVcpu {
         print_vmcs!(self, "CR0_SHADOW", CTRL_CR0_SHADOW);
         print_vmcs!(self, "CR4_MASK", CTRL_CR4_MASK);
         print_vmcs!(self, "CR4_SHADOW", CTRL_CR4_SHADOW);
+
+        // println!("");
+        // print_msr!(self, "IA32_VMX_CR0_FIXED0", IA32_VMX_CR0_FIXED0);
+        // print_msr!(self, "IA32_VMX_CR0_FIXED1", IA32_VMX_CR0_FIXED1);
+        // print_msr!(self, "IA32_VMX_CR4_FIXED0", IA32_VMX_CR4_FIXED0);
+        // print_msr!(self, "IA32_VMX_CR4_FIXED1", IA32_VMX_CR4_FIXED1);
 
         println!("");
         print_vmcs!(self, "CS_SELECTOR", GUEST_CS);
@@ -906,11 +957,37 @@ impl HvVcpu {
         print_register!(self, "RSP", RSP);
         print_register!(self, "RBP", RBP);
 
-
         println!("~~~~~ Host State ~~~~");
         // print_vmcs!(self, "CR0", HOST_CR0);
-        print_vmcs!(self, "CR3", HOST_CR3);
-        print_vmcs!(self, "CR4", HOST_CR4);
+        // print_vmcs!(self, "HOST_CR3", HOST_CR3);
+        // print_vmcs!(self, "HOST_CR4", HOST_CR4);
+
+        // println!("");
+        // print_vmcs!(self, "HOST_IA32_EFER", HOST_IA32_EFER);
+
+        // print_vmcs!(self, "HOST_FS_BASE", HOST_FS_BASE);
+        // print_vmcs!(self, "HOST_GDTR_BASE", HOST_GDTR_BASE);
+
+        // print_vmcs!(self, "HOST_GS_BASE", HOST_GS_BASE);
+        // print_vmcs!(self, "HOST_IDTR_BASE", HOST_IDTR_BASE);
+
+        // print_vmcs!(self, "HOST_IA32_PAT", HOST_IA32_PAT);
+
+        // println!("");
+        // print_vmcs!(self, "HOST_RIP", HOST_RIP);
+        // print_vmcs!(self, "HOST_RSP", HOST_RSP);
+
+        // println!("");
+        // print_vmcs!(self, "HOST_ES", HOST_ES);
+        // print_vmcs!(self, "HOST_CS", HOST_CS);
+        // print_vmcs!(self, "HOST_SS", HOST_SS);
+        // print_vmcs!(self, "HOST_DS", HOST_DS);
+        // print_vmcs!(self, "HOST_FS", HOST_FS);
+        // print_vmcs!(self, "HOST_GS", HOST_GS);
+
+        // println!("");
+        // print_vmcs!(self, "HOST_IA32_SYSENTER_CS", HOST_IA32_SYSENTER_CS);
+        // print_vmcs!(self, "HOST_IA32_SYSENTER_EIP", HOST_IA32_SYSENTER_EIP);
 
         println!("~~~~ EO VMCS Dump ~~~");
         Ok(())

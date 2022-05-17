@@ -26,18 +26,17 @@ fn main() -> Result<(), Error> {
             .expect("Could not init memory with `vm-memory`");
 
     // vcpu.dump_vmcs()?;
-    // vcpu.init(&guest_memory).unwrap();
-    println!("init done");
+    vcpu.init(&guest_memory).unwrap();
+    // println!("init done");
 
-
-    vcpu.reset().unwrap();
-    vcpu.real_mode_setup().unwrap();
+    // vcpu.reset().unwrap();
+    // vcpu.real_mode_setup().unwrap();
     // vcpu.enter_protected_mode(&guest_memory).unwrap();
 
     // vcpu.test_protected_mode(&guest_memory).unwrap();
     vcpu.dump_vmcs()?;
     vcpu.vcpu.run()?;
-    vcpu.dump_vmcs()?;
+    // vcpu.dump_vmcs()?;
     // vcpu.dump_vmcs()?;
     let rc = vcpu
         .vcpu
