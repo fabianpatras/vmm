@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 
 const MEM_SIZE: usize = 0x100000;
-const GUEST_ADDR: usize = 0x69420000;
+const GUEST_ADDR: usize = 0x0;
 
 static CODE: &[u8] = &[
 	0xB8, 0x05, 0x00, // mov ax, 0x05
