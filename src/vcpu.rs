@@ -1,3 +1,8 @@
+// for the moment :)
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_macros)]
+
 use hv::{
     x86::{
         vmx::{read_capability, Capability::*, VCpuVmxExt, Vmcs::*},
@@ -84,6 +89,42 @@ const IA32_VMX_CR4_FIXED1: u32 = 0x489;
 // https://developer.apple.com/documentation/hypervisor/3727856-model-specific_registers?language=objc
 const HV_MSR_IA32_SYSENTER_EIP: u32 = 0x00000176;
 
+// Read register
+macro_rules! rreg {
+    ($vcpu:expr, $register_field:expr) => {{
+        $vcpu.read_register($register_field).unwrap()
+    }};
+}
+
+// Write register
+macro_rules! wreg {
+    ($vcpu:expr, $register_field:expr, $value:expr) => {{
+        $vcpu.write_register($register_field, $value).unwrap();
+    }};
+}
+
+// Read vmcs field
+macro_rules! rvmcs {
+    ($vcpu:expr, $vmcs_field:expr) => {{
+        $vcpu.read_vmcs($vmcs_field).unwrap()
+    }};
+}
+
+// Write vmcs field
+macro_rules! wvmcs {
+    ($vcpu:expr, $vmcs_field:expr, $value:expr) => {{
+        $vcpu.write_vmcs($vmcs_field, $value).unwrap();
+    }};
+}
+
+// Read MSR
+macro_rules! rmsr {
+    ($vcpu:expr, $msr_index:expr) => {{
+        $vcpu.read_msr($msr_index).unwrap()
+    }};
+}
+
+// Prints the value in both hex and binary with text as label
 macro_rules! color_print {
     ($text:expr, $value:expr) => {{
         println!(
@@ -93,55 +134,26 @@ macro_rules! color_print {
     }};
 }
 
+// prints vmcs field
 macro_rules! print_vmcs {
-    ($s:expr, $name:expr ,$vmcs_field:expr) => {{
-        let res: u64 = $s.vcpu.read_vmcs($vmcs_field).unwrap();
-        color_print!($name, res);
-        res
+    ($vcpu:expr, $name:expr ,$vmcs_field:expr) => {{
+        // let res: u64 = $vcpu.read_vmcs($vmcs_field).unwrap();
+        color_print!($name, rvmcs!($vcpu, $vmcs_field));
+        // res
     }};
 }
 
+// prints register
 macro_rules! print_register {
-    ($s:expr, $name:expr ,$register_field:expr) => {{
-        let res: u64 = $s.vcpu.read_register($register_field).unwrap();
-        color_print!($name, res);
-        res
-    }};
-}
-
-macro_rules! rreg {
-    ($vcpu:expr, $register_field:expr) => {{
-        $s.vcpu.read_register($register_field).unwrap()
-    }};
-}
-
-macro_rules! wreg {
-    ($vcpu:expr, $register_field:expr, $value:expr) => {{
-        $vcpu.write_register($register_field, $value).unwrap();
-    }};
-}
-
-macro_rules! rvmcs {
-    ($vcpu:expr, $vmcs_field:expr) => {{
-        $s.vcpu.read_vmcs($vmcs_field).unwrap()
-    }};
-}
-
-macro_rules! wvmcs {
-    ($vcpu:expr, $vmcs_field:expr, $value:expr) => {{
-        $vcpu.write_vmcs($vmcs_field, $value).unwrap();
-    }};
-}
-
-macro_rules! rmsr {
-    ($vcpu:expr, $msr_index:expr) => {{
-        $vcpu.read_msr($msr_index).unwrap()
+    ($vcpu:expr, $name:expr ,$register_field:expr) => {{
+        // let res: u64 = $vcpu.read_register($register_field).unwrap();
+        color_print!($name, rreg!($vcpu, $register_field));
+        // res
     }};
 }
 
 macro_rules! print_msr {
     ($s:expr, $name:expr ,$msr_index:expr) => {{
-        // let res: u64 = $s.vcpu.read_vmcs($msr_index).unwrap();
         color_print!($name, rmsr!($s.vcpu, $msr_index));
     }};
 }
@@ -288,7 +300,7 @@ impl HvVcpu {
         // Local Descriptor Table
         wvmcs!(vcpu, GUEST_LDTR, 0x0);
         wvmcs!(vcpu, GUEST_LDTR_LIMIT, 0x0);
-        wvmcs!(vcpu, GUEST_LDTR_AR, 0x10000); // (1<<17)
+        wvmcs!(vcpu, GUEST_LDTR_AR, 0x10000); // (1<<16)
         wvmcs!(vcpu, GUEST_LDTR_BASE, 0x0);
 
         // GDTR Global Description Table Register
@@ -307,6 +319,44 @@ impl HvVcpu {
         Ok(())
     }
 
+    pub fn real_mode_code_test<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
+        let code: &[u8] = &[
+            0xB8, 0x05, 0x00, // mov ax, 0x05
+            0xBB, 0x07, 0x00, // mov bx, 0x07
+            0x00, 0xC3, // add bl, al
+            0xF4, 					// hlt
+            // 0x0F, 0x01, 0xC1, // VMCALL -> creates a VM Exit
+        ];
+
+        let guest_add: u64 = 0x00;
+
+        let vcpu = &self.vcpu;
+
+        guest_memory
+            .write(code, GuestAddress(guest_add))
+            .expect("Could not write CODE to guest memory");
+
+        wreg!(vcpu, RIP, guest_add as _);
+        wreg!(vcpu, RFLAGS, 0x2);
+        wreg!(vcpu, RSP, 0x0);
+
+        wreg!(vcpu, RAX, 0xFF);
+        wreg!(vcpu, RBX, 0xFF);
+
+        self.dump_vmcs()?;
+        self.vcpu.run()?;
+        self.vcpu.run()?;
+
+        print_register!(vcpu, "RAX", RAX);
+        print_register!(vcpu, "RBX", RBX);
+        print_register!(vcpu, "RIP", RIP);
+
+        print_vmcs!(vcpu, "RO_EXIT_REASON", RO_EXIT_REASON);
+        print_vmcs!(vcpu, "RO_EXIT_QUALIFIC", RO_EXIT_QUALIFIC);
+
+        Ok(())
+    }
+
     pub fn init<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         // initializare Protected Mode + Long Mode
 
@@ -314,6 +364,7 @@ impl HvVcpu {
         // - initilizeze GDTR - GDT Register
         // - Control Registers CR1 -> CR4
 
+        let vcpu = &self.vcpu;
         let mut cap: u64;
 
         cap = read_capability(PinBased).unwrap();
@@ -349,7 +400,10 @@ impl HvVcpu {
         self.vcpu
             .write_vmcs(
                 CTRL_VMENTRY_CONTROLS,
-                cap2ctrl(cap, CTRL_VMENTRY_CONTROLS_IA32_MODE),
+                cap2ctrl(
+                    cap,
+                    rvmcs!(vcpu, CTRL_VMENTRY_CONTROLS) | CTRL_VMENTRY_CONTROLS_IA32_MODE,
+                ),
             )
             .unwrap();
 
@@ -808,6 +862,8 @@ impl HvVcpu {
     }
 
     pub fn dump_vmcs(&self) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+
         println!("~~~~~ VMCS Dump ~~~~~");
         println!("~~~~ Capabilities ~~~");
 
@@ -831,163 +887,164 @@ impl HvVcpu {
 
         println!("");
         println!("~~~~ VMX control ~~~~");
-        print_vmcs!(self, "PIN_BASED_CONTROLS", CTRL_PIN_BASED);
-        print_vmcs!(self, "CPU_BASED_CONTROLS", CTRL_CPU_BASED);
-        print_vmcs!(self, "CPU_BASED2_CONTROLS", CTRL_CPU_BASED2);
-        print_vmcs!(self, "VMEXIT_CONTROLS", CTRL_VMEXIT_CONTROLS);
-        print_vmcs!(self, "VMENTRY_CONTROLS", CTRL_VMENTRY_CONTROLS);
-        print_vmcs!(self, "VMENTRY_IRQ_INFO", CTRL_VMENTRY_IRQ_INFO);
-        print_vmcs!(self, "EXECUTION_BITMAP", CTRL_EXC_BITMAP);
+        print_vmcs!(vcpu, "PIN_BASED_CONTROLS", CTRL_PIN_BASED);
+        print_vmcs!(vcpu, "CPU_BASED_CONTROLS", CTRL_CPU_BASED);
+        print_vmcs!(vcpu, "CPU_BASED2_CONTROLS", CTRL_CPU_BASED2);
+        print_vmcs!(vcpu, "VMEXIT_CONTROLS", CTRL_VMEXIT_CONTROLS);
+        print_vmcs!(vcpu, "VMENTRY_CONTROLS", CTRL_VMENTRY_CONTROLS);
+        print_vmcs!(vcpu, "VMENTRY_IRQ_INFO", CTRL_VMENTRY_IRQ_INFO);
+        print_vmcs!(vcpu, "EXECUTION_BITMAP", CTRL_EXC_BITMAP);
+        print_vmcs!(vcpu, "EPTP", CTRL_EPTP);
 
         println!("");
         println!("~~~~ Exit reason ~~~~");
-        print_vmcs!(self, "EXIT_REASON", RO_EXIT_REASON);
-        print_vmcs!(self, "EXIT_QUALIFIC", RO_EXIT_QUALIFIC);
-        print_vmcs!(self, "VMEXIT_INSTR_LEN", RO_VMEXIT_INSTR_LEN);
+        print_vmcs!(vcpu, "EXIT_REASON", RO_EXIT_REASON);
+        print_vmcs!(vcpu, "EXIT_QUALIFIC", RO_EXIT_QUALIFIC);
+        print_vmcs!(vcpu, "VMEXIT_INSTR_LEN", RO_VMEXIT_INSTR_LEN);
 
         println!("");
         println!("~~~~ Guest State ~~~~");
-        print_vmcs!(self, "CR0", GUEST_CR0);
-        print_vmcs!(self, "CR3", GUEST_CR3);
-        print_vmcs!(self, "CR3_COUNT", CTRL_CR3_COUNT);
-        print_vmcs!(self, "CR3_TARGET0", CTRL_CR3_VALUE0);
-        print_vmcs!(self, "CR3_TARGET1", CTRL_CR3_VALUE1);
-        print_vmcs!(self, "CR3_TARGET2", CTRL_CR3_VALUE2);
-        print_vmcs!(self, "CR3_TARGET3", CTRL_CR3_VALUE3);
-        print_vmcs!(self, "CR4", GUEST_CR4);
-        print_vmcs!(self, "DR7", GUEST_DR7);
+        print_vmcs!(vcpu, "CR0", GUEST_CR0);
+        print_vmcs!(vcpu, "CR3", GUEST_CR3);
+        print_vmcs!(vcpu, "CR3_COUNT", CTRL_CR3_COUNT);
+        print_vmcs!(vcpu, "CR3_TARGET0", CTRL_CR3_VALUE0);
+        print_vmcs!(vcpu, "CR3_TARGET1", CTRL_CR3_VALUE1);
+        print_vmcs!(vcpu, "CR3_TARGET2", CTRL_CR3_VALUE2);
+        print_vmcs!(vcpu, "CR3_TARGET3", CTRL_CR3_VALUE3);
+        print_vmcs!(vcpu, "CR4", GUEST_CR4);
+        print_vmcs!(vcpu, "DR7", GUEST_DR7);
 
         println!("");
-        print_vmcs!(self, "CR0_MASK", CTRL_CR0_MASK);
-        print_vmcs!(self, "CR0_SHADOW", CTRL_CR0_SHADOW);
-        print_vmcs!(self, "CR4_MASK", CTRL_CR4_MASK);
-        print_vmcs!(self, "CR4_SHADOW", CTRL_CR4_SHADOW);
+        print_vmcs!(vcpu, "CR0_MASK", CTRL_CR0_MASK);
+        print_vmcs!(vcpu, "CR0_SHADOW", CTRL_CR0_SHADOW);
+        print_vmcs!(vcpu, "CR4_MASK", CTRL_CR4_MASK);
+        print_vmcs!(vcpu, "CR4_SHADOW", CTRL_CR4_SHADOW);
 
         // println!("");
-        // print_msr!(self, "IA32_VMX_CR0_FIXED0", IA32_VMX_CR0_FIXED0);
-        // print_msr!(self, "IA32_VMX_CR0_FIXED1", IA32_VMX_CR0_FIXED1);
-        // print_msr!(self, "IA32_VMX_CR4_FIXED0", IA32_VMX_CR4_FIXED0);
-        // print_msr!(self, "IA32_VMX_CR4_FIXED1", IA32_VMX_CR4_FIXED1);
+        // print_msr!(vcpu, "IA32_VMX_CR0_FIXED0", IA32_VMX_CR0_FIXED0);
+        // print_msr!(vcpu, "IA32_VMX_CR0_FIXED1", IA32_VMX_CR0_FIXED1);
+        // print_msr!(vcpu, "IA32_VMX_CR4_FIXED0", IA32_VMX_CR4_FIXED0);
+        // print_msr!(vcpu, "IA32_VMX_CR4_FIXED1", IA32_VMX_CR4_FIXED1);
 
         println!("");
-        print_vmcs!(self, "CS_SELECTOR", GUEST_CS);
-        print_vmcs!(self, "CS_BASE", GUEST_CS_BASE);
-        print_vmcs!(self, "CS_LIMIT", GUEST_CS_LIMIT);
-        print_vmcs!(self, "CS_AR", GUEST_CS_AR);
+        print_vmcs!(vcpu, "CS_SELECTOR", GUEST_CS);
+        print_vmcs!(vcpu, "CS_BASE", GUEST_CS_BASE);
+        print_vmcs!(vcpu, "CS_LIMIT", GUEST_CS_LIMIT);
+        print_vmcs!(vcpu, "CS_AR", GUEST_CS_AR);
 
         println!("");
-        print_vmcs!(self, "DS_SELECTOR", GUEST_DS);
-        print_vmcs!(self, "DS_BASE", GUEST_DS_BASE);
-        print_vmcs!(self, "DS_LIMIT", GUEST_DS_LIMIT);
-        print_vmcs!(self, "DS_AR", GUEST_DS_AR);
+        print_vmcs!(vcpu, "DS_SELECTOR", GUEST_DS);
+        print_vmcs!(vcpu, "DS_BASE", GUEST_DS_BASE);
+        print_vmcs!(vcpu, "DS_LIMIT", GUEST_DS_LIMIT);
+        print_vmcs!(vcpu, "DS_AR", GUEST_DS_AR);
 
         println!("");
-        print_vmcs!(self, "ES_SELECTOR", GUEST_ES);
-        print_vmcs!(self, "ES_BASE", GUEST_ES_BASE);
-        print_vmcs!(self, "ES_LIMIT", GUEST_ES_LIMIT);
-        print_vmcs!(self, "ES_AR", GUEST_ES_AR);
+        print_vmcs!(vcpu, "ES_SELECTOR", GUEST_ES);
+        print_vmcs!(vcpu, "ES_BASE", GUEST_ES_BASE);
+        print_vmcs!(vcpu, "ES_LIMIT", GUEST_ES_LIMIT);
+        print_vmcs!(vcpu, "ES_AR", GUEST_ES_AR);
 
         println!("");
-        print_vmcs!(self, "FS_SELECTOR", GUEST_FS);
-        print_vmcs!(self, "FS_BASE", GUEST_FS_BASE);
-        print_vmcs!(self, "FS_LIMIT", GUEST_FS_LIMIT);
-        print_vmcs!(self, "FS_AR", GUEST_FS_AR);
+        print_vmcs!(vcpu, "FS_SELECTOR", GUEST_FS);
+        print_vmcs!(vcpu, "FS_BASE", GUEST_FS_BASE);
+        print_vmcs!(vcpu, "FS_LIMIT", GUEST_FS_LIMIT);
+        print_vmcs!(vcpu, "FS_AR", GUEST_FS_AR);
 
         println!("");
-        print_vmcs!(self, "GS_SELECTOR", GUEST_GS);
-        print_vmcs!(self, "GS_BASE", GUEST_GS_BASE);
-        print_vmcs!(self, "GS_LIMIT", GUEST_GS_LIMIT);
-        print_vmcs!(self, "GS_AR", GUEST_GS_AR);
+        print_vmcs!(vcpu, "GS_SELECTOR", GUEST_GS);
+        print_vmcs!(vcpu, "GS_BASE", GUEST_GS_BASE);
+        print_vmcs!(vcpu, "GS_LIMIT", GUEST_GS_LIMIT);
+        print_vmcs!(vcpu, "GS_AR", GUEST_GS_AR);
 
         println!("");
-        print_vmcs!(self, "SS_SELECTOR", GUEST_SS);
-        print_vmcs!(self, "SS_BASE", GUEST_SS_BASE);
-        print_vmcs!(self, "SS_LIMIT", GUEST_SS_LIMIT);
-        print_vmcs!(self, "SS_AR", GUEST_SS_AR);
+        print_vmcs!(vcpu, "SS_SELECTOR", GUEST_SS);
+        print_vmcs!(vcpu, "SS_BASE", GUEST_SS_BASE);
+        print_vmcs!(vcpu, "SS_LIMIT", GUEST_SS_LIMIT);
+        print_vmcs!(vcpu, "SS_AR", GUEST_SS_AR);
 
         println!("");
-        print_vmcs!(self, "TR_SELECTOR", GUEST_TR);
-        print_vmcs!(self, "TR_BASE", GUEST_TR_BASE);
-        print_vmcs!(self, "TR_LIMIT", GUEST_TR_LIMIT);
-        print_vmcs!(self, "TR_AR", GUEST_TR_AR);
+        print_vmcs!(vcpu, "TR_SELECTOR", GUEST_TR);
+        print_vmcs!(vcpu, "TR_BASE", GUEST_TR_BASE);
+        print_vmcs!(vcpu, "TR_LIMIT", GUEST_TR_LIMIT);
+        print_vmcs!(vcpu, "TR_AR", GUEST_TR_AR);
 
         println!("");
-        print_vmcs!(self, "GDTR_BASE", GUEST_GDTR_BASE);
-        print_vmcs!(self, "GDTR_LIMIT", GUEST_GDTR_LIMIT);
+        print_vmcs!(vcpu, "GDTR_BASE", GUEST_GDTR_BASE);
+        print_vmcs!(vcpu, "GDTR_LIMIT", GUEST_GDTR_LIMIT);
 
         println!("");
-        print_vmcs!(self, "IDTR_BASE", GUEST_IDTR_BASE);
-        print_vmcs!(self, "IDTR_LIMIT", GUEST_IDTR_LIMIT);
+        print_vmcs!(vcpu, "IDTR_BASE", GUEST_IDTR_BASE);
+        print_vmcs!(vcpu, "IDTR_LIMIT", GUEST_IDTR_LIMIT);
 
         println!("");
-        print_vmcs!(self, "LDTR_BASE", GUEST_LDTR_BASE);
-        print_vmcs!(self, "LDTR_LIMIT", GUEST_LDTR_LIMIT);
-        print_vmcs!(self, "LDTR_AR", GUEST_LDTR_AR);
+        print_vmcs!(vcpu, "LDTR_BASE", GUEST_LDTR_BASE);
+        print_vmcs!(vcpu, "LDTR_LIMIT", GUEST_LDTR_LIMIT);
+        print_vmcs!(vcpu, "LDTR_AR", GUEST_LDTR_AR);
 
         println!("");
-        print_vmcs!(self, "RIP", GUEST_RIP);
-        print_vmcs!(self, "RSP", GUEST_RSP);
-        print_vmcs!(self, "RFLAGS", GUEST_RFLAGS);
+        print_vmcs!(vcpu, "RIP", GUEST_RIP);
+        print_vmcs!(vcpu, "RSP", GUEST_RSP);
+        print_vmcs!(vcpu, "RFLAGS", GUEST_RFLAGS);
 
         println!("");
-        print_vmcs!(self, "SYSENTER_EIP", GUEST_SYSENTER_EIP);
-        print_vmcs!(self, "SYSENTER_ESP", GUEST_SYSENTER_ESP);
-        print_vmcs!(self, "SYSENTER_CS", GUEST_IA32_SYSENTER_CS);
+        print_vmcs!(vcpu, "SYSENTER_EIP", GUEST_SYSENTER_EIP);
+        print_vmcs!(vcpu, "SYSENTER_ESP", GUEST_SYSENTER_ESP);
+        print_vmcs!(vcpu, "SYSENTER_CS", GUEST_IA32_SYSENTER_CS);
 
         println!("");
-        print_vmcs!(self, "IA32_EFER", GUEST_IA32_EFER);
-        print_vmcs!(self, "IA32_DEBUGCTL", GUEST_IA32_DEBUGCTL);
-        print_vmcs!(self, "IA32_PAT", GUEST_IA32_PAT);
-        print_vmcs!(self, "ACTIVITY_STATE", GUEST_ACTIVITY_STATE);
-        print_vmcs!(self, "LINK_POINTER", GUEST_LINK_POINTER);
+        print_vmcs!(vcpu, "IA32_EFER", GUEST_IA32_EFER);
+        print_vmcs!(vcpu, "IA32_DEBUGCTL", GUEST_IA32_DEBUGCTL);
+        print_vmcs!(vcpu, "IA32_PAT", GUEST_IA32_PAT);
+        print_vmcs!(vcpu, "ACTIVITY_STATE", GUEST_ACTIVITY_STATE);
+        print_vmcs!(vcpu, "LINK_POINTER", GUEST_LINK_POINTER);
 
         println!("");
-        print_register!(self, "RIP", RIP);
-        print_register!(self, "RFLAGS", RFLAGS);
+        print_register!(vcpu, "RIP", RIP);
+        print_register!(vcpu, "RFLAGS", RFLAGS);
 
         println!("");
-        print_register!(self, "RAX", RAX);
-        print_register!(self, "RBX", RBX);
-        print_register!(self, "RCX", RCX);
-        print_register!(self, "RDX", RDX);
+        print_register!(vcpu, "RAX", RAX);
+        print_register!(vcpu, "RBX", RBX);
+        print_register!(vcpu, "RCX", RCX);
+        print_register!(vcpu, "RDX", RDX);
 
         println!("");
-        print_register!(self, "RSI", RSI);
-        print_register!(self, "RDI", RDI);
-        print_register!(self, "RSP", RSP);
-        print_register!(self, "RBP", RBP);
+        print_register!(vcpu, "RSI", RSI);
+        print_register!(vcpu, "RDI", RDI);
+        print_register!(vcpu, "RSP", RSP);
+        print_register!(vcpu, "RBP", RBP);
 
         println!("~~~~~ Host State ~~~~");
-        // print_vmcs!(self, "CR0", HOST_CR0);
-        // print_vmcs!(self, "HOST_CR3", HOST_CR3);
-        // print_vmcs!(self, "HOST_CR4", HOST_CR4);
+        // print_vmcs!(vcpu, "CR0", HOST_CR0);
+        // print_vmcs!(vcpu, "HOST_CR3", HOST_CR3);
+        // print_vmcs!(vcpu, "HOST_CR4", HOST_CR4);
 
         // println!("");
-        // print_vmcs!(self, "HOST_IA32_EFER", HOST_IA32_EFER);
+        // print_vmcs!(vcpu, "HOST_IA32_EFER", HOST_IA32_EFER);
 
-        // print_vmcs!(self, "HOST_FS_BASE", HOST_FS_BASE);
-        // print_vmcs!(self, "HOST_GDTR_BASE", HOST_GDTR_BASE);
+        // print_vmcs!(vcpu, "HOST_FS_BASE", HOST_FS_BASE);
+        // print_vmcs!(vcpu, "HOST_GDTR_BASE", HOST_GDTR_BASE);
 
-        // print_vmcs!(self, "HOST_GS_BASE", HOST_GS_BASE);
-        // print_vmcs!(self, "HOST_IDTR_BASE", HOST_IDTR_BASE);
+        // print_vmcs!(vcpu, "HOST_GS_BASE", HOST_GS_BASE);
+        // print_vmcs!(vcpu, "HOST_IDTR_BASE", HOST_IDTR_BASE);
 
-        // print_vmcs!(self, "HOST_IA32_PAT", HOST_IA32_PAT);
-
-        // println!("");
-        // print_vmcs!(self, "HOST_RIP", HOST_RIP);
-        // print_vmcs!(self, "HOST_RSP", HOST_RSP);
+        // print_vmcs!(vcpu, "HOST_IA32_PAT", HOST_IA32_PAT);
 
         // println!("");
-        // print_vmcs!(self, "HOST_ES", HOST_ES);
-        // print_vmcs!(self, "HOST_CS", HOST_CS);
-        // print_vmcs!(self, "HOST_SS", HOST_SS);
-        // print_vmcs!(self, "HOST_DS", HOST_DS);
-        // print_vmcs!(self, "HOST_FS", HOST_FS);
-        // print_vmcs!(self, "HOST_GS", HOST_GS);
+        // print_vmcs!(vcpu, "HOST_RIP", HOST_RIP);
+        // print_vmcs!(vcpu, "HOST_RSP", HOST_RSP);
 
         // println!("");
-        // print_vmcs!(self, "HOST_IA32_SYSENTER_CS", HOST_IA32_SYSENTER_CS);
-        // print_vmcs!(self, "HOST_IA32_SYSENTER_EIP", HOST_IA32_SYSENTER_EIP);
+        // print_vmcs!(vcpu, "HOST_ES", HOST_ES);
+        // print_vmcs!(vcpu, "HOST_CS", HOST_CS);
+        // print_vmcs!(vcpu, "HOST_SS", HOST_SS);
+        // print_vmcs!(vcpu, "HOST_DS", HOST_DS);
+        // print_vmcs!(vcpu, "HOST_FS", HOST_FS);
+        // print_vmcs!(vcpu, "HOST_GS", HOST_GS);
+
+        // println!("");
+        // print_vmcs!(vcpu, "HOST_IA32_SYSENTER_CS", HOST_IA32_SYSENTER_CS);
+        // print_vmcs!(vcpu, "HOST_IA32_SYSENTER_EIP", HOST_IA32_SYSENTER_EIP);
 
         println!("~~~~ EO VMCS Dump ~~~");
         Ok(())
