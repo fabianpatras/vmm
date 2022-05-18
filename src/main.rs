@@ -37,7 +37,7 @@ fn main() -> Result<(), Error> {
     let vcpu = HvVcpu::new(vm).unwrap();
     // vcpu.init(&guest_memory).unwrap();
 
-    vcpu.real_mode_setup().unwrap();
+    vcpu.protected_mode_setup().unwrap();
     vcpu.real_mode_code_test(&guest_memory).unwrap();
 
     // vcpu.dump_vmcs()?;

@@ -319,6 +319,106 @@ impl HvVcpu {
         Ok(())
     }
 
+    pub fn protected_mode_setup(&self) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+
+        let mut cap: u64;
+
+        cap = read_capability(ProcBased).unwrap();
+
+        wvmcs!(
+            vcpu,
+            CTRL_CPU_BASED,
+            cap2ctrl(
+                cap,
+                CTRL_CPU_BASED_HLT | CTRL_CPU_BASED_CR8_LOAD | CTRL_CPU_BASED_CR8_STORE,
+            )
+        );
+
+        cap = read_capability(ProcBased2).unwrap();
+        wvmcs!(vcpu, CTRL_CPU_BASED2, cap2ctrl(cap, 0));
+
+        cap = read_capability(Entry).unwrap();
+        wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0));
+
+        cap = read_capability(Exit).unwrap();
+        wvmcs!(vcpu, CTRL_VMEXIT_CONTROLS, cap2ctrl(cap, 0));
+
+        wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
+        wvmcs!(vcpu, CTRL_CR0_MASK, 0x60000000);
+        wvmcs!(vcpu, CTRL_CR0_SHADOW, 0x0);
+        wvmcs!(vcpu, CTRL_CR4_MASK, 0x0);
+        wvmcs!(vcpu, CTRL_CR4_SHADOW, 0x0);
+
+        // Code segment
+        wvmcs!(vcpu, GUEST_CS, 0x0);
+        wvmcs!(vcpu, GUEST_CS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_CS_AR, 0x9b);
+        wvmcs!(vcpu, GUEST_CS_BASE, 0x0);
+
+        // Data segment
+        wvmcs!(vcpu, GUEST_DS, 0x0);
+        wvmcs!(vcpu, GUEST_DS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_DS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_DS_BASE, 0x0);
+
+        // Stack segment
+        wvmcs!(vcpu, GUEST_SS, 0x0);
+        wvmcs!(vcpu, GUEST_SS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_SS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_SS_BASE, 0x0);
+
+        // Extra segment
+        wvmcs!(vcpu, GUEST_ES, 0x0);
+        wvmcs!(vcpu, GUEST_ES_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_ES_AR, 0x93);
+        wvmcs!(vcpu, GUEST_ES_BASE, 0x0);
+
+        // F segment
+        wvmcs!(vcpu, GUEST_FS, 0x0);
+        wvmcs!(vcpu, GUEST_FS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_FS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_FS_BASE, 0x0);
+
+        // G segment
+        wvmcs!(vcpu, GUEST_GS, 0x0);
+        wvmcs!(vcpu, GUEST_GS_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_GS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_GS_BASE, 0x0);
+
+        // Task state segment
+        wvmcs!(vcpu, GUEST_TR, 0x0);
+        wvmcs!(vcpu, GUEST_TR_LIMIT, 0xffff);
+        wvmcs!(vcpu, GUEST_TR_AR, 0x83);
+        wvmcs!(vcpu, GUEST_TR_BASE, 0x0);
+
+        // Local Descriptor Table
+        wvmcs!(vcpu, GUEST_LDTR, 0x0);
+        wvmcs!(vcpu, GUEST_LDTR_LIMIT, 0x0);
+        wvmcs!(vcpu, GUEST_LDTR_AR, 0x10000); // (1<<16)
+        wvmcs!(vcpu, GUEST_LDTR_BASE, 0x0);
+
+        // GDTR Global Description Table Register
+        wvmcs!(vcpu, GUEST_GDTR_LIMIT, 0x0);
+        wvmcs!(vcpu, GUEST_GDTR_BASE, 0x0);
+
+        // IDTR Interrupt Description Table Register
+        wvmcs!(vcpu, GUEST_IDTR_LIMIT, 0x0);
+        wvmcs!(vcpu, GUEST_IDTR_BASE, 0x0);
+
+        // CR stuff
+        let cr0 = X86_CR0_PE
+            | X86_CR0_MP
+            | X86_CR0_ET
+            | X86_CR0_NE
+            | X86_CR0_AM;
+        wvmcs!(vcpu, GUEST_CR0, cr0);
+        wvmcs!(vcpu, GUEST_CR3, 0x0);
+        wvmcs!(vcpu, GUEST_CR4, 0x2000); // CR4.VMXE = (1 << 13)
+
+        Ok(())
+    }
+
     pub fn real_mode_code_test<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let code: &[u8] = &[
             0xB8, 0x05, 0x00, // mov ax, 0x05
