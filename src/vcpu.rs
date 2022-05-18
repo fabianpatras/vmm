@@ -47,6 +47,7 @@ const X86_CR0_WP: u64 = 1 << 16;
 const X86_CR0_AM: u64 = 1 << 18;
 const X86_CR0_PG: u64 = 1 << 31;
 
+// See Intel SDM3A 2.5
 const X86_CR4_PAE: u64 = 1 << 5;
 const X86_CR4_VMXE: u64 = 1 << 13;
 
@@ -411,10 +412,13 @@ impl HvVcpu {
             | X86_CR0_MP
             | X86_CR0_ET
             | X86_CR0_NE
-            | X86_CR0_AM;
+            | X86_CR0_AM
+            | X86_CR0_PG;
         wvmcs!(vcpu, GUEST_CR0, cr0);
         wvmcs!(vcpu, GUEST_CR3, 0x0);
-        wvmcs!(vcpu, GUEST_CR4, 0x2000); // CR4.VMXE = (1 << 13)
+
+        let cr4 = X86_CR4_VMXE;
+        wvmcs!(vcpu, GUEST_CR4, cr4);
 
         Ok(())
     }
@@ -428,7 +432,7 @@ impl HvVcpu {
             // 0x0F, 0x01, 0xC1, // VMCALL -> creates a VM Exit
         ];
 
-        let guest_add: u64 = 0x00;
+        let guest_add: u64 = 0x0;
 
         let vcpu = &self.vcpu;
 
@@ -450,6 +454,7 @@ impl HvVcpu {
         print_register!(vcpu, "RAX", RAX);
         print_register!(vcpu, "RBX", RBX);
         print_register!(vcpu, "RIP", RIP);
+        print_register!(vcpu, "CR2 FAULT", CR2);
 
         print_vmcs!(vcpu, "RO_EXIT_REASON", RO_EXIT_REASON);
         print_vmcs!(vcpu, "RO_EXIT_QUALIFIC", RO_EXIT_QUALIFIC);
