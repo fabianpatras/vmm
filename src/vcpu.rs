@@ -72,6 +72,9 @@ const X86_PDE_RW: u64 = 1 << 1;
 const X86_PDE_U: u64 = 1 << 2;
 const X86_PDE_PS: u64 = 1 << 7;
 
+// See Intel SDM3A 4.4.1 Table 4-8
+const X86_PAE_PDPTE_P: u64 = 1 << 0;
+
 // See Intel SDM3C 24.6.2
 const CTRL_CPU_BASED_HLT: u64 = 1 << 7;
 const CTRL_CPU_BASED_CR8_LOAD: u64 = 1 << 19;
@@ -327,29 +330,31 @@ impl HvVcpu {
         let vcpu = &self.vcpu;
         let ctrl_cpu_based2_disable_ept_mask = !(1 << 1) as u64;
 
-        wvmcs!(vcpu, CTRL_CPU_BASED2,
-            rvmcs!(vcpu, CTRL_CPU_BASED2)
-            & ctrl_cpu_based2_disable_ept_mask);
+        wvmcs!(
+            vcpu,
+            CTRL_CPU_BASED2,
+            rvmcs!(vcpu, CTRL_CPU_BASED2) & ctrl_cpu_based2_disable_ept_mask
+        );
 
         Ok(())
     }
 
     /// sets up a single page of physical space for VA space [0x0, 0x1000)
-    pub fn paging_mode_setup_32_bit <M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
+    pub fn paging_mode_setup_32_bit<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let vcpu = &self.vcpu;
 
         // See Intel SDM3A 4.3 32-BIT PAGING
         // When using 32-bit paging mode, CR3 is used to
         // locate the first paging-structure, the page directory
-        
+
         // this is the 8-th physical page
-        let page_directory_pa =  8 * PAGE_SIZE_32_BIT;
-        
+        let page_directory_pa = 8 * PAGE_SIZE_32_BIT;
+
         // this is the 9-th physical page
-        let page_directory_entry_pa =  9 * PAGE_SIZE_32_BIT;
+        let page_directory_entry_pa = 9 * PAGE_SIZE_32_BIT;
 
         // this is the 10-th physical page
-        let page_table_entry_pa =  10 * PAGE_SIZE_32_BIT;
+        let page_table_entry_pa = 10 * PAGE_SIZE_32_BIT;
 
         let page_directory_address = GuestAddress(page_directory_pa as u64);
         let page_directory_entry_address = GuestAddress(page_directory_entry_pa as u64);
@@ -358,7 +363,7 @@ impl HvVcpu {
         let cr3 = page_directory_address.raw_value();
         wvmcs!(vcpu, GUEST_CR3, cr3);
 
-        // See Intel SDM3A 4.3 Figure 4-2 
+        // See Intel SDM3A 4.3 Figure 4-2
         // writing a single Page Directory Entry (reference of a Page Table)
         // with Present bit and Write Bit
         // this refers a region of 4MB
@@ -379,19 +384,78 @@ impl HvVcpu {
             )
             .unwrap();
 
-        // WRONG WRONG WRONG
-        // // writing 1K entries (4bytes each) into the 4KB Physical Address Page
-        // // with Present Bit and Write Bit
-        // // this refers to a region of 4KB
-        // for i in 0 .. 1024 {
-        //     guest_memory
-        //     .write_obj(
-        //         i as u32,
-        //         // this is safe because there are exaclty 1024 iterations
-        //         page_table_entry_address.unchecked_add(4 * i)
-        //     )
-        //     .unwrap();
-        // }
+        // page_table_entry_address is the GPA of the physical page (kinda like RAM)
+        Ok(())
+    }
+
+    /// sets up a single page of physical space for VA space [0x0, 0x1000)
+    pub fn paging_mode_setup_pae<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+
+        // See Intel SDM3A 4.4 PAE PAGING
+        // When PAE paging is used, CR3 references the base of a 32-Byte page-directory-pointer table
+        // The page-directory-pointer-table comprises four (4) 64-bit entries called PDPTEs.
+        // A PDPTE references a Page Directory -> 4 Page Directories need to be set up
+        // We're only going to set up a single Page Directory and point all 4 PDPTEs
+        // to the same Page Directory
+
+        // this is the 8-th physical page
+        let page_directory_pa = 8 * PAGE_SIZE_32_BIT;
+
+        // this is the 9-th physical page
+        let page_directory_entry_pa = 9 * PAGE_SIZE_32_BIT;
+
+        // this is the 10-th physical page
+        let page_table_entry_pa = 10 * PAGE_SIZE_32_BIT;
+
+        let page_directory_address = GuestAddress(page_directory_pa as u64);
+        let page_directory_entry_address = GuestAddress(page_directory_entry_pa as u64);
+        let page_table_entry_address = GuestAddress(page_table_entry_pa as u64);
+
+        // ?
+        wvmcs!(vcpu, GUEST_CR3, 0x0);
+
+        wvmcs!(
+            vcpu,
+            GUEST_PDPTE0,
+            page_directory_address.raw_value() | X86_PAE_PDPTE_P
+        );
+        wvmcs!(
+            vcpu,
+            GUEST_PDPTE1,
+            page_directory_address.raw_value() | X86_PAE_PDPTE_P
+        );
+        wvmcs!(
+            vcpu,
+            GUEST_PDPTE2,
+            page_directory_address.raw_value() | X86_PAE_PDPTE_P
+        );
+        wvmcs!(
+            vcpu,
+            GUEST_PDPTE3,
+            page_directory_address.raw_value() | X86_PAE_PDPTE_P
+        );
+
+        // See Intel SDM3A 4.3 Figure 4-2
+        // writing a single Page Directory Entry (reference of a Page Table)
+        // with Present bit and Write Bit
+        // this refers a region of 4MB
+        guest_memory
+            .write_obj(
+                page_directory_entry_address.raw_value() | X86_PDE_P | X86_PDE_RW | X86_PDE_U,
+                page_directory_address,
+            )
+            .unwrap();
+
+        // writing a single Page Table Entry (reference of a Physical Address Page)
+        // with Present Bit and Write Bit
+        // this refers to a region of 4KB
+        guest_memory
+            .write_obj(
+                page_table_entry_address.raw_value() | X86_PDE_P | X86_PDE_RW | X86_PDE_U,
+                page_directory_entry_address,
+            )
+            .unwrap();
 
         Ok(())
     }
@@ -484,19 +548,12 @@ impl HvVcpu {
         wvmcs!(vcpu, GUEST_IDTR_BASE, 0x0);
 
         // CR stuff
-        let cr0 = X86_CR0_PE
-            | X86_CR0_MP
-            | X86_CR0_ET
-            | X86_CR0_NE
-            | X86_CR0_AM
-            | X86_CR0_PG;
+        let cr0 = X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | X86_CR0_NE | X86_CR0_AM | X86_CR0_PG;
         wvmcs!(vcpu, GUEST_CR0, cr0);
         wvmcs!(vcpu, GUEST_CR3, 0x0);
 
-        let cr4 = X86_CR4_VMXE;
+        let cr4 = X86_CR4_VMXE | X86_CR4_PAE;
         wvmcs!(vcpu, GUEST_CR4, cr4);
-
-
 
         Ok(())
     }
@@ -506,8 +563,8 @@ impl HvVcpu {
             0xB8, 0x05, 0x00, // mov ax, 0x05
             0xBB, 0x07, 0x00, // mov bx, 0x07
             0x00, 0xC3, // add bl, al
-            0xF4, 					// hlt
-            // 0x0F, 0x01, 0xC1, // VMCALL -> creates a VM Exit
+            0xF4, // hlt
+                  // 0x0F, 0x01, 0xC1, // VMCALL -> creates a VM Exit
         ];
 
         let guest_addr: u64 = 10 * 0x1000;
@@ -539,7 +596,7 @@ impl HvVcpu {
         print_register!(vcpu, "RBX", RBX);
         print_register!(vcpu, "RIP", RIP);
         print_register!(vcpu, "CR2 FAULT", CR2);
-        
+
         print_vmcs!(vcpu, "GUEST_PHYSICAL_ADDRESS", GUEST_PHYSICAL_ADDRESS);
         print_vmcs!(vcpu, "RO_EXIT_REASON", RO_EXIT_REASON);
         print_vmcs!(vcpu, "RO_EXIT_QUALIFIC", RO_EXIT_QUALIFIC);
@@ -1187,6 +1244,12 @@ impl HvVcpu {
         print_vmcs!(vcpu, "IA32_PAT", GUEST_IA32_PAT);
         print_vmcs!(vcpu, "ACTIVITY_STATE", GUEST_ACTIVITY_STATE);
         print_vmcs!(vcpu, "LINK_POINTER", GUEST_LINK_POINTER);
+
+        println!("");
+        print_vmcs!(vcpu, "PDPTE0", GUEST_PDPTE0);
+        print_vmcs!(vcpu, "PDPTE1", GUEST_PDPTE1);
+        print_vmcs!(vcpu, "PDPTE2", GUEST_PDPTE2);
+        print_vmcs!(vcpu, "PDPTE3", GUEST_PDPTE3);
 
         println!("");
         print_register!(vcpu, "RIP", RIP);

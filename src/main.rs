@@ -9,7 +9,7 @@ use hv::x86::VmOptions;
 // use inner_vmm::Vmm;
 
 use libc::c_void;
-use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, Bytes};
+use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
 pub mod vcpu;
 use crate::vcpu::{HvVcpu, VM_EXIT_VM_ENTRY_FAILURE, X86_IA32_EFER_LMA, X86_IA32_EFER_LME};
@@ -48,7 +48,8 @@ fn main() -> Result<(), Error> {
 
     // vcpu.real_mode_setup().unwrap();
     vcpu.protected_mode_setup().unwrap();
-    vcpu.paging_mode_setup_32_bit(&guest_memory).unwrap();
+    // vcpu.paging_mode_setup_32_bit(&guest_memory).unwrap();
+    vcpu.paging_mode_setup_pae(&guest_memory).unwrap();
     // vcpu.disable_ept().unwrap();
     vcpu.real_mode_code_test(&guest_memory).unwrap();
 
