@@ -65,6 +65,7 @@ const X86_PDPTE_P: u64 = 1 << 0;
 const X86_PDPTE_RW: u64 = 1 << 1;
 const X86_PDPTE_U: u64 = 1 << 2;
 
+// See Intel SDM3A 4.3 Table 4-5 (for 32-bit paging mode)
 // See Intel SDM3A 4.5.4 Table 4-18
 const X86_PDE_P: u64 = 1 << 0;
 const X86_PDE_RW: u64 = 1 << 1;
@@ -89,6 +90,8 @@ const IA32_VMX_CR4_FIXED1: u32 = 0x489;
 
 // https://developer.apple.com/documentation/hypervisor/3727856-model-specific_registers?language=objc
 const HV_MSR_IA32_SYSENTER_EIP: u32 = 0x00000176;
+
+const PAGE_SIZE_32_BIT: u32 = 4096; //bytes
 
 // Read register
 macro_rules! rreg {
@@ -320,6 +323,79 @@ impl HvVcpu {
         Ok(())
     }
 
+    pub fn disable_ept(&self) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+        let ctrl_cpu_based2_disable_ept_mask = !(1 << 1) as u64;
+
+        wvmcs!(vcpu, CTRL_CPU_BASED2,
+            rvmcs!(vcpu, CTRL_CPU_BASED2)
+            & ctrl_cpu_based2_disable_ept_mask);
+
+        Ok(())
+    }
+
+    /// sets up a single page of physical space for VA space [0x0, 0x1000)
+    pub fn paging_mode_setup_32_bit <M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+
+        // See Intel SDM3A 4.3 32-BIT PAGING
+        // When using 32-bit paging mode, CR3 is used to
+        // locate the first paging-structure, the page directory
+        
+        // this is the 8-th physical page
+        let page_directory_pa =  8 * PAGE_SIZE_32_BIT;
+        
+        // this is the 9-th physical page
+        let page_directory_entry_pa =  9 * PAGE_SIZE_32_BIT;
+
+        // this is the 10-th physical page
+        let page_table_entry_pa =  10 * PAGE_SIZE_32_BIT;
+
+        let page_directory_address = GuestAddress(page_directory_pa as u64);
+        let page_directory_entry_address = GuestAddress(page_directory_entry_pa as u64);
+        let page_table_entry_address = GuestAddress(page_table_entry_pa as u64);
+
+        let cr3 = page_directory_address.raw_value();
+        wvmcs!(vcpu, GUEST_CR3, cr3);
+
+        // See Intel SDM3A 4.3 Figure 4-2 
+        // writing a single Page Directory Entry (reference of a Page Table)
+        // with Present bit and Write Bit
+        // this refers a region of 4MB
+        guest_memory
+            .write_obj(
+                page_directory_entry_address.raw_value() | X86_PDE_P | X86_PDE_RW | X86_PDE_U,
+                page_directory_address,
+            )
+            .unwrap();
+
+        // writing a single Page Table Entry (reference of a Physical Address Page)
+        // with Present Bit and Write Bit
+        // this refers to a region of 4KB
+        guest_memory
+            .write_obj(
+                page_table_entry_address.raw_value() | X86_PDE_P | X86_PDE_RW | X86_PDE_U,
+                page_directory_entry_address,
+            )
+            .unwrap();
+
+        // WRONG WRONG WRONG
+        // // writing 1K entries (4bytes each) into the 4KB Physical Address Page
+        // // with Present Bit and Write Bit
+        // // this refers to a region of 4KB
+        // for i in 0 .. 1024 {
+        //     guest_memory
+        //     .write_obj(
+        //         i as u32,
+        //         // this is safe because there are exaclty 1024 iterations
+        //         page_table_entry_address.unchecked_add(4 * i)
+        //     )
+        //     .unwrap();
+        // }
+
+        Ok(())
+    }
+
     pub fn protected_mode_setup(&self) -> Result<(), Error> {
         let vcpu = &self.vcpu;
 
@@ -345,7 +421,7 @@ impl HvVcpu {
         cap = read_capability(Exit).unwrap();
         wvmcs!(vcpu, CTRL_VMEXIT_CONTROLS, cap2ctrl(cap, 0));
 
-        wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
+        wvmcs!(vcpu, CTRL_EXC_BITMAP, 0xffff_ffff);
         wvmcs!(vcpu, CTRL_CR0_MASK, 0x60000000);
         wvmcs!(vcpu, CTRL_CR0_SHADOW, 0x0);
         wvmcs!(vcpu, CTRL_CR4_MASK, 0x0);
@@ -420,6 +496,8 @@ impl HvVcpu {
         let cr4 = X86_CR4_VMXE;
         wvmcs!(vcpu, GUEST_CR4, cr4);
 
+
+
         Ok(())
     }
 
@@ -432,15 +510,15 @@ impl HvVcpu {
             // 0x0F, 0x01, 0xC1, // VMCALL -> creates a VM Exit
         ];
 
-        let guest_add: u64 = 0x0;
+        let guest_addr: u64 = 10 * 0x1000;
 
         let vcpu = &self.vcpu;
 
         guest_memory
-            .write(code, GuestAddress(guest_add))
+            .write(code, GuestAddress(guest_addr))
             .expect("Could not write CODE to guest memory");
 
-        wreg!(vcpu, RIP, guest_add as _);
+        wreg!(vcpu, RIP, 0x0 as _);
         wreg!(vcpu, RFLAGS, 0x2);
         wreg!(vcpu, RSP, 0x0);
 
@@ -448,14 +526,21 @@ impl HvVcpu {
         wreg!(vcpu, RBX, 0xFF);
 
         self.dump_vmcs()?;
+
+        // in Real Mode
+
+        self.vcpu.run()?;
+        self.vcpu.run()?;
         self.vcpu.run()?;
         self.vcpu.run()?;
 
+        println!("\n\treal_mode_code_test dump");
         print_register!(vcpu, "RAX", RAX);
         print_register!(vcpu, "RBX", RBX);
         print_register!(vcpu, "RIP", RIP);
         print_register!(vcpu, "CR2 FAULT", CR2);
-
+        
+        print_vmcs!(vcpu, "GUEST_PHYSICAL_ADDRESS", GUEST_PHYSICAL_ADDRESS);
         print_vmcs!(vcpu, "RO_EXIT_REASON", RO_EXIT_REASON);
         print_vmcs!(vcpu, "RO_EXIT_QUALIFIC", RO_EXIT_QUALIFIC);
 
