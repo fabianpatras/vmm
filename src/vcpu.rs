@@ -5,7 +5,7 @@
 
 use hv::{
     x86::{
-        vmx::{read_capability, Capability::*, VCpuVmxExt, Vmcs::*},
+        vmx::{read_capability, Capability::*, Reason, Reason::*, VCpuVmxExt, Vmcs::*},
         Reg::*,
         VcpuExt,
     },
@@ -95,6 +95,10 @@ const IA32_VMX_CR4_FIXED1: u32 = 0x489;
 const HV_MSR_IA32_SYSENTER_EIP: u32 = 0x00000176;
 
 const PAGE_SIZE_32_BIT: u32 = 4096; //bytes
+
+const ER_HLT: u64 = HLT as u64;
+const ER_VMENTRY_GUEST: u64 = VMENTRY_GUEST as u64;
+const ER_EPT_VIOLATION: u64 = EPT_VIOLATION as u64;
 
 // Read register
 macro_rules! rreg {
@@ -481,6 +485,7 @@ impl HvVcpu {
 
         cap = read_capability(Entry).unwrap();
         wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0));
+        // wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, CTRL_VMENTRY_CONTROLS_IA32_MODE));
 
         cap = read_capability(Exit).unwrap();
         wvmcs!(vcpu, CTRL_VMEXIT_CONTROLS, cap2ctrl(cap, 0));
@@ -494,37 +499,37 @@ impl HvVcpu {
         // Code segment
         wvmcs!(vcpu, GUEST_CS, 0x0);
         wvmcs!(vcpu, GUEST_CS_LIMIT, 0xffff);
-        wvmcs!(vcpu, GUEST_CS_AR, 0x9b);
+        wvmcs!(vcpu, GUEST_CS_AR, 0xa09b);
         wvmcs!(vcpu, GUEST_CS_BASE, 0x0);
 
         // Data segment
         wvmcs!(vcpu, GUEST_DS, 0x0);
         wvmcs!(vcpu, GUEST_DS_LIMIT, 0xffff);
-        wvmcs!(vcpu, GUEST_DS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_DS_AR, 0xc093);
         wvmcs!(vcpu, GUEST_DS_BASE, 0x0);
 
         // Stack segment
         wvmcs!(vcpu, GUEST_SS, 0x0);
         wvmcs!(vcpu, GUEST_SS_LIMIT, 0xffff);
-        wvmcs!(vcpu, GUEST_SS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_SS_AR, 0xc093);
         wvmcs!(vcpu, GUEST_SS_BASE, 0x0);
 
         // Extra segment
         wvmcs!(vcpu, GUEST_ES, 0x0);
         wvmcs!(vcpu, GUEST_ES_LIMIT, 0xffff);
-        wvmcs!(vcpu, GUEST_ES_AR, 0x93);
+        wvmcs!(vcpu, GUEST_ES_AR, 0xc093);
         wvmcs!(vcpu, GUEST_ES_BASE, 0x0);
 
         // F segment
         wvmcs!(vcpu, GUEST_FS, 0x0);
         wvmcs!(vcpu, GUEST_FS_LIMIT, 0xffff);
-        wvmcs!(vcpu, GUEST_FS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_FS_AR, 0xc093);
         wvmcs!(vcpu, GUEST_FS_BASE, 0x0);
 
         // G segment
         wvmcs!(vcpu, GUEST_GS, 0x0);
         wvmcs!(vcpu, GUEST_GS_LIMIT, 0xffff);
-        wvmcs!(vcpu, GUEST_GS_AR, 0x93);
+        wvmcs!(vcpu, GUEST_GS_AR, 0xc093);
         wvmcs!(vcpu, GUEST_GS_BASE, 0x0);
 
         // Task state segment
@@ -547,13 +552,66 @@ impl HvVcpu {
         wvmcs!(vcpu, GUEST_IDTR_LIMIT, 0x0);
         wvmcs!(vcpu, GUEST_IDTR_BASE, 0x0);
 
-        // CR stuff
+        // CRx stuff
         let cr0 = X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | X86_CR0_NE | X86_CR0_AM | X86_CR0_PG;
         wvmcs!(vcpu, GUEST_CR0, cr0);
+
         wvmcs!(vcpu, GUEST_CR3, 0x0);
 
         let cr4 = X86_CR4_VMXE | X86_CR4_PAE;
         wvmcs!(vcpu, GUEST_CR4, cr4);
+
+        let mut efer = rvmcs!(vcpu, GUEST_IA32_EFER);
+        // efer |= X86_IA32_EFER_LME;
+        // efer |= X86_IA32_EFER_LMA;
+        wvmcs!(vcpu, GUEST_IA32_EFER, efer);
+
+        Ok(())
+    }
+
+    pub fn run_cpu_handle_exits(&self) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+
+        println!("Running vcpu...");
+        loop {
+            match vcpu.run() {
+                Ok(()) => {
+                    let exit_reason = rvmcs!(vcpu, RO_EXIT_REASON);
+                    let exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC);
+
+                    match exit_reason {
+                        ER_HLT => {
+                            println!("Got HLT Exit reason\n");
+                            break;
+                        }
+                        er if (er & VM_EXIT_VM_ENTRY_FAILURE) != 0 => {
+                            println!(
+                                "Got VMENTRY FALURE error [{:#X}] with qualific [{:#X}]. Aborting...",
+                                er & !VM_EXIT_VM_ENTRY_FAILURE,
+                                exit_qualific
+                            );
+                            break;
+                        }
+                        ER_EPT_VIOLATION => {
+                            println!(
+                                "Got EPT Violation with qual [{:#X}]. Skipping...",
+                                exit_qualific
+                            );
+                        }
+                        er => {
+                            println!(
+                                "Got unknown exit reason [{:#X}] with qualific [{:#X}]. Exiting...",
+                                er, exit_qualific
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Error encountered whire running");
+                    break;
+                }
+            }
+        }
 
         Ok(())
     }
@@ -582,16 +640,11 @@ impl HvVcpu {
         wreg!(vcpu, RAX, 0xFF);
         wreg!(vcpu, RBX, 0xFF);
 
-        self.dump_vmcs()?;
+        self.dump_vmcs().unwrap();
 
-        // in Real Mode
+        self.run_cpu_handle_exits().unwrap();
 
-        self.vcpu.run()?;
-        self.vcpu.run()?;
-        self.vcpu.run()?;
-        self.vcpu.run()?;
-
-        println!("\n\treal_mode_code_test dump");
+        println!("\treal_mode_code_test dump");
         print_register!(vcpu, "RAX", RAX);
         print_register!(vcpu, "RBX", RBX);
         print_register!(vcpu, "RIP", RIP);
