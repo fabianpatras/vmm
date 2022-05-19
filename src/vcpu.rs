@@ -96,6 +96,7 @@ const HV_MSR_IA32_SYSENTER_EIP: u32 = 0x00000176;
 
 const PAGE_SIZE_32_BIT: u32 = 4096; //bytes
 
+const ER_EXC_NMI: u64 = EXC_NMI as u64;
 const ER_HLT: u64 = HLT as u64;
 const ER_VMENTRY_GUEST: u64 = VMENTRY_GUEST as u64;
 const ER_EPT_VIOLATION: u64 = EPT_VIOLATION as u64;
@@ -464,6 +465,74 @@ impl HvVcpu {
         Ok(())
     }
 
+    /// sets up 512 2MB pages of physical space for VA space [0x0, 0x4000_0000)
+    pub fn paging_mode_setup_4_level<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+
+        // See Intel SDM3A 4.5 4-LEVEL PAGING
+        // With ordinary paging, CR3 locates the first paging structure, PML4
+        // The PML4 contains 2^9 PML4E, each one referencing a PDPT (see PAE)
+        // We're going to use 2MB pages, See Intel SMD3A Figure 4-9
+
+        // this is the 8-th physical page
+        let pml4_pa = 8 * PAGE_SIZE_32_BIT;
+
+        // this is the 9-th physical page
+        let pdpt_pa = 9 * PAGE_SIZE_32_BIT;
+
+        // this is the 10-th physical page
+        let page_directory_pa = 10 * PAGE_SIZE_32_BIT;
+
+        // this is the 11-th physical page
+        let page_2mb_pa = 11 * PAGE_SIZE_32_BIT;
+
+        let pml4_address = GuestAddress(pml4_pa as u64);
+        let pdpt_address = GuestAddress(pdpt_pa as u64);
+        let page_directory_address = GuestAddress(page_directory_pa as u64);
+        let page_2mb_address = GuestAddress(page_2mb_pa as u64);
+
+        wvmcs!(vcpu, GUEST_CR3, pml4_address.raw_value());
+
+        // See Intel SDM3A 4.5 Table 4-15
+        // writing a single PLM4 Entry (Page-Directory-Pointer-Table)
+        // with Present bit and Write Bit into PML4 Table
+        // this refers a region of 512GB
+        guest_memory
+            .write_obj(
+                pdpt_address.raw_value() | X86_PLM4E_P | X86_PLM4E_RW | X86_PLM4E_U,
+                pml4_address,
+            )
+            .unwrap();
+
+        // See Intel SDM3A 4.5.4 Table 4-17
+        // writing a single PDPT Entry (Page Directory)
+        // with Present bit and Write Bit into PDP Table
+        // this refers to a region of 1GB
+        guest_memory
+            .write_obj(
+                page_directory_address.raw_value() | X86_PDPTE_P | X86_PDPTE_RW | X86_PDPTE_U,
+                pdpt_address,
+            )
+            .unwrap();
+
+        // See Intel SDM3A 4.5.4 Table 4-18
+        // writing 512 PDE (2MB Page each)
+        // with Present bit and Write Bit into Page Directory
+        // this refers to a region of 1GB
+        for i in 0..512 {
+            guest_memory
+                .write_obj(
+                    (i << 21) | X86_PDE_PS | X86_PDE_P | X86_PDE_RW | X86_PDE_U,
+                    // this will always be ok because there is enought room in a 4KB Page Directory structure
+                    // for 512 64-bit entries
+                    page_directory_address.unchecked_add(8 * i),
+                )
+                .unwrap();
+        }
+
+        Ok(())
+    }
+
     pub fn protected_mode_setup(&self) -> Result<(), Error> {
         let vcpu = &self.vcpu;
 
@@ -580,8 +649,15 @@ impl HvVcpu {
                     let exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC);
 
                     match exit_reason {
+                        ER_EXC_NMI => {
+                            println!(
+                                "Got Exeption Exit reason IRQ info [{:#X}]",
+                                rvmcs!(vcpu, RO_VMEXIT_IRQ_INFO)
+                            );
+                            break;
+                        }
                         ER_HLT => {
-                            println!("Got HLT Exit reason\n");
+                            println!("Got HLT Exit reason");
                             break;
                         }
                         er if (er & VM_EXIT_VM_ENTRY_FAILURE) != 0 => {
@@ -603,11 +679,12 @@ impl HvVcpu {
                                 "Got unknown exit reason [{:#X}] with qualific [{:#X}]. Exiting...",
                                 er, exit_qualific
                             );
+                            break;
                         }
                     }
                 }
                 Err(e) => {
-                    println!("Error encountered whire running");
+                    println!("Error encountered while running");
                     break;
                 }
             }
