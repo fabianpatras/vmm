@@ -47,10 +47,10 @@ fn main() -> Result<(), Error> {
     // vcpu.init(&guest_memory).unwrap();
 
     // vcpu.real_mode_setup().unwrap();
-    vcpu.protected_mode_setup().unwrap();
+    vcpu.protected_mode_setup(&guest_memory).unwrap();
     // vcpu.paging_mode_setup_32_bit(&guest_memory).unwrap();
-    vcpu.paging_mode_setup_pae(&guest_memory).unwrap();
-    // vcpu.paging_mode_setup_4_level(&guest_memory).unwrap();
+    // vcpu.paging_mode_setup_pae(&guest_memory).unwrap();
+    vcpu.paging_mode_setup_4_level(&guest_memory).unwrap();
 
     // vcpu.disable_ept().unwrap();
     vcpu.real_mode_code_test(&guest_memory).unwrap();

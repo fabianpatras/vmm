@@ -82,6 +82,7 @@ const CTRL_CPU_BASED_CR8_STORE: u64 = 1 << 20;
 
 // See Intel SDM3C 24.8.1
 const CTRL_VMENTRY_CONTROLS_IA32_MODE: u64 = 1 << 9;
+const CTRL_VMENTRY_CONTROLS_LOAD_IA32_EFER: u64 = 1 << 15;
 
 pub const VM_EXIT_VM_ENTRY_FAILURE: u64 = 1 << 31;
 
@@ -533,13 +534,11 @@ impl HvVcpu {
         Ok(())
     }
 
-    pub fn protected_mode_setup(&self) -> Result<(), Error> {
+    pub fn protected_mode_setup<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let vcpu = &self.vcpu;
 
         let mut cap: u64;
-
         cap = read_capability(ProcBased).unwrap();
-
         wvmcs!(
             vcpu,
             CTRL_CPU_BASED,
@@ -554,12 +553,22 @@ impl HvVcpu {
 
         cap = read_capability(Entry).unwrap();
         wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0));
-        // wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, CTRL_VMENTRY_CONTROLS_IA32_MODE));
+        // wvmcs!(
+        //     vcpu,
+        //     CTRL_VMENTRY_CONTROLS,
+        //     cap2ctrl(
+        //         cap,
+        //         CTRL_VMENTRY_CONTROLS_IA32_MODE | CTRL_VMENTRY_CONTROLS_LOAD_IA32_EFER
+        //     )
+        // );
 
         cap = read_capability(Exit).unwrap();
         wvmcs!(vcpu, CTRL_VMEXIT_CONTROLS, cap2ctrl(cap, 0));
 
+        // See Intel SMD3C 24.6.3 - setting a bit to 1 causes the exception to cauze a VM exit
+        // See Intel SDM1 6.5.1 - Table 6-1 for exception details
         wvmcs!(vcpu, CTRL_EXC_BITMAP, 0xffff_ffff);
+        // wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
         wvmcs!(vcpu, CTRL_CR0_MASK, 0x60000000);
         wvmcs!(vcpu, CTRL_CR0_SHADOW, 0x0);
         wvmcs!(vcpu, CTRL_CR4_MASK, 0x0);
@@ -604,22 +613,48 @@ impl HvVcpu {
         // Task state segment
         wvmcs!(vcpu, GUEST_TR, 0x0);
         wvmcs!(vcpu, GUEST_TR_LIMIT, 0xffff);
-        wvmcs!(vcpu, GUEST_TR_AR, 0x83);
+        wvmcs!(vcpu, GUEST_TR_AR, 0x808b);
         wvmcs!(vcpu, GUEST_TR_BASE, 0x0);
 
         // Local Descriptor Table
         wvmcs!(vcpu, GUEST_LDTR, 0x0);
         wvmcs!(vcpu, GUEST_LDTR_LIMIT, 0x0);
-        wvmcs!(vcpu, GUEST_LDTR_AR, 0x10000); // (1<<16)
+        wvmcs!(vcpu, GUEST_LDTR_AR, 0x8082);
+        // wvmcs!(vcpu, GUEST_LDTR_AR, 0x10000); // (1<<16)
         wvmcs!(vcpu, GUEST_LDTR_BASE, 0x0);
 
+        let null_seg = SegmentDescriptor::from(0, 0, 0);
+        let code_seg = SegmentDescriptor::from(0xa09b, 0, 0xffff);
+        let data_seg = SegmentDescriptor::from(0xc093, 0, 0xffff);
+        let tss_seg = SegmentDescriptor::from(0x808b, 0, 0xffff);
+
+        let gdt = Gdt(vec![null_seg, code_seg, data_seg, tss_seg]);
+
+        for (idx, segment) in gdt.0.iter().enumerate() {
+            let addr = guest_memory
+                .checked_offset(
+                    GuestAddress(BOOT_GDT_OFFSET),
+                    idx * mem::size_of::<SegmentDescriptor>(),
+                )
+                .unwrap();
+            guest_memory.write_obj(*segment, addr).unwrap();
+        }
+
         // GDTR Global Description Table Register
-        wvmcs!(vcpu, GUEST_GDTR_LIMIT, 0x0);
-        wvmcs!(vcpu, GUEST_GDTR_BASE, 0x0);
+        wvmcs!(vcpu, GUEST_GDTR_BASE, BOOT_GDT_OFFSET);
+        wvmcs!(vcpu, GUEST_GDTR_LIMIT, 0x20);
+
+        guest_memory
+            .write_obj(0u64, GuestAddress(BOOT_IDT_OFFSET))
+            .unwrap();
 
         // IDTR Interrupt Description Table Register
-        wvmcs!(vcpu, GUEST_IDTR_LIMIT, 0x0);
-        wvmcs!(vcpu, GUEST_IDTR_BASE, 0x0);
+        wvmcs!(vcpu, GUEST_IDTR_BASE, BOOT_IDT_OFFSET);
+        wvmcs!(
+            vcpu,
+            GUEST_IDTR_LIMIT,
+            (std::mem::size_of::<u64>() - 1) as u64
+        );
 
         // CRx stuff
         let cr0 = X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | X86_CR0_NE | X86_CR0_AM | X86_CR0_PG;
@@ -631,9 +666,32 @@ impl HvVcpu {
         wvmcs!(vcpu, GUEST_CR4, cr4);
 
         let mut efer = rvmcs!(vcpu, GUEST_IA32_EFER);
-        // efer |= X86_IA32_EFER_LME;
+        efer |= X86_IA32_EFER_LME;
         // efer |= X86_IA32_EFER_LMA;
         wvmcs!(vcpu, GUEST_IA32_EFER, efer);
+
+        self.enter_long_mode(efer).unwrap();
+
+        Ok(())
+    }
+
+    pub fn enter_long_mode(&self, mut efer: u64) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+        let ar_type_mask = 0x0f;
+        let ar_type_busy_tss = 0x0b;
+        
+        efer |= X86_IA32_EFER_LMA;
+        wvmcs!(vcpu, GUEST_IA32_EFER, efer);
+
+        let entry_ctls = rvmcs!(vcpu, CTRL_VMENTRY_CONTROLS);
+        wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, entry_ctls | CTRL_VMENTRY_CONTROLS_IA32_MODE);
+
+        if efer & X86_IA32_EFER_LME != 0 {
+            let tr_ar = rvmcs!(vcpu, GUEST_TR_AR);
+            if tr_ar & ar_type_mask != ar_type_busy_tss {
+                wvmcs!(vcpu, GUEST_TR_AR, (tr_ar & !ar_type_mask) | ar_type_busy_tss);
+            }
+        }
 
         Ok(())
     }
