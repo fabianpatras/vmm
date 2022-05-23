@@ -95,12 +95,30 @@ const IA32_VMX_CR4_FIXED1: u32 = 0x489;
 // https://developer.apple.com/documentation/hypervisor/3727856-model-specific_registers?language=objc
 const HV_MSR_IA32_SYSENTER_EIP: u32 = 0x00000176;
 
+// default page size
 const PAGE_SIZE_32_BIT: u32 = 4096; //bytes
 
+// exit reasons as u64
 const ER_EXC_NMI: u64 = EXC_NMI as u64;
 const ER_HLT: u64 = HLT as u64;
 const ER_VMENTRY_GUEST: u64 = VMENTRY_GUEST as u64;
 const ER_EPT_VIOLATION: u64 = EPT_VIOLATION as u64;
+
+
+// See Intel SDM4 Table 2-2 MSR indexes 
+const MSR_IA32_TSC: u32 = 0x00000010;
+const MSR_IA32_SYSENTER_CS: u32 = 0x00000174;
+const MSR_IA32_SYSENTER_ESP: u32 = 0x00000175;
+const MSR_IA32_SYSENTER_EIP: u32 = 0x00000176;
+const MSR_IA32_EFER: u32 = 0xc0000080;
+const MSR_IA32_STAR: u32 = 0xc0000081;
+const MSR_IA32_LSTAR: u32 = 0xc0000082;
+const MSR_IA32_CSTAR: u32 = 0xc0000083;
+const MSR_IA32_SYSCALL_MASK: u32 = 0xc0000084;
+const MSR_IA32_FS_BASE: u32 = 0xc0000100;
+const MSR_IA32_GS_BASE: u32 = 0xc0000101;
+const MSR_IA32_KERNEL_GS_BASE: u32 = 0xc0000102;
+const MSR_IA32_TSC_AUX: u32 = 0xc0000103;
 
 // Read register
 macro_rules! rreg {
@@ -534,8 +552,30 @@ impl HvVcpu {
         Ok(())
     }
 
+    pub fn enable_native_msrs(&self) -> Result<(), Error> {
+		self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_CS, true).unwrap();
+		self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_EIP, true).unwrap();
+		self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_ESP, true).unwrap();
+        
+		self.vcpu.enable_native_msr(MSR_IA32_STAR, true).unwrap();
+		self.vcpu.enable_native_msr(MSR_IA32_CSTAR, true).unwrap();
+		self.vcpu.enable_native_msr(MSR_IA32_LSTAR, true).unwrap();
+        
+		self.vcpu.enable_native_msr(MSR_IA32_TSC, true).unwrap();
+		self.vcpu.enable_native_msr(MSR_IA32_KERNEL_GS_BASE, true).unwrap();
+
+        self.vcpu.enable_native_msr(MSR_IA32_FS_BASE, true).unwrap();
+		self.vcpu.enable_native_msr(MSR_IA32_GS_BASE, true).unwrap();
+		self.vcpu.enable_native_msr(MSR_IA32_TSC_AUX, true).unwrap();
+
+        Ok(())
+    }
+
     pub fn protected_mode_setup<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let vcpu = &self.vcpu;
+
+
+        self.enable_native_msrs().unwrap();
 
         let mut cap: u64;
         cap = read_capability(ProcBased).unwrap();
@@ -552,15 +592,15 @@ impl HvVcpu {
         wvmcs!(vcpu, CTRL_CPU_BASED2, cap2ctrl(cap, 0));
 
         cap = read_capability(Entry).unwrap();
-        wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0));
-        // wvmcs!(
-        //     vcpu,
-        //     CTRL_VMENTRY_CONTROLS,
-        //     cap2ctrl(
-        //         cap,
-        //         CTRL_VMENTRY_CONTROLS_IA32_MODE | CTRL_VMENTRY_CONTROLS_LOAD_IA32_EFER
-        //     )
-        // );
+        // wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0));
+        wvmcs!(
+            vcpu,
+            CTRL_VMENTRY_CONTROLS,
+            cap2ctrl(
+                cap,
+                CTRL_VMENTRY_CONTROLS_IA32_MODE | CTRL_VMENTRY_CONTROLS_LOAD_IA32_EFER
+            )
+        );
 
         cap = read_capability(Exit).unwrap();
         wvmcs!(vcpu, CTRL_VMEXIT_CONTROLS, cap2ctrl(cap, 0));
@@ -575,50 +615,51 @@ impl HvVcpu {
         wvmcs!(vcpu, CTRL_CR4_SHADOW, 0x0);
 
         // Code segment
-        wvmcs!(vcpu, GUEST_CS, 0x0);
+        wvmcs!(vcpu, GUEST_CS, 0x8);
         wvmcs!(vcpu, GUEST_CS_LIMIT, 0xffff);
         wvmcs!(vcpu, GUEST_CS_AR, 0xa09b);
         wvmcs!(vcpu, GUEST_CS_BASE, 0x0);
 
         // Data segment
-        wvmcs!(vcpu, GUEST_DS, 0x0);
+        wvmcs!(vcpu, GUEST_DS, 0x10);
         wvmcs!(vcpu, GUEST_DS_LIMIT, 0xffff);
         wvmcs!(vcpu, GUEST_DS_AR, 0xc093);
         wvmcs!(vcpu, GUEST_DS_BASE, 0x0);
 
         // Stack segment
-        wvmcs!(vcpu, GUEST_SS, 0x0);
+        wvmcs!(vcpu, GUEST_SS, 0x10);
         wvmcs!(vcpu, GUEST_SS_LIMIT, 0xffff);
         wvmcs!(vcpu, GUEST_SS_AR, 0xc093);
         wvmcs!(vcpu, GUEST_SS_BASE, 0x0);
 
         // Extra segment
-        wvmcs!(vcpu, GUEST_ES, 0x0);
+        wvmcs!(vcpu, GUEST_ES, 0x10);
         wvmcs!(vcpu, GUEST_ES_LIMIT, 0xffff);
         wvmcs!(vcpu, GUEST_ES_AR, 0xc093);
         wvmcs!(vcpu, GUEST_ES_BASE, 0x0);
 
         // F segment
-        wvmcs!(vcpu, GUEST_FS, 0x0);
+        wvmcs!(vcpu, GUEST_FS, 0x10);
         wvmcs!(vcpu, GUEST_FS_LIMIT, 0xffff);
         wvmcs!(vcpu, GUEST_FS_AR, 0xc093);
         wvmcs!(vcpu, GUEST_FS_BASE, 0x0);
 
         // G segment
-        wvmcs!(vcpu, GUEST_GS, 0x0);
+        wvmcs!(vcpu, GUEST_GS, 0x10);
         wvmcs!(vcpu, GUEST_GS_LIMIT, 0xffff);
         wvmcs!(vcpu, GUEST_GS_AR, 0xc093);
         wvmcs!(vcpu, GUEST_GS_BASE, 0x0);
 
         // Task state segment
-        wvmcs!(vcpu, GUEST_TR, 0x0);
+        wvmcs!(vcpu, GUEST_TR, 0x18);
         wvmcs!(vcpu, GUEST_TR_LIMIT, 0xffff);
         wvmcs!(vcpu, GUEST_TR_AR, 0x808b);
         wvmcs!(vcpu, GUEST_TR_BASE, 0x0);
 
         // Local Descriptor Table
         wvmcs!(vcpu, GUEST_LDTR, 0x0);
-        wvmcs!(vcpu, GUEST_LDTR_LIMIT, 0x0);
+        // wvmcs!(vcpu, GUEST_LDTR_LIMIT, 0x0);
+        wvmcs!(vcpu, GUEST_LDTR_LIMIT, 0xffff);
         wvmcs!(vcpu, GUEST_LDTR_AR, 0x8082);
         // wvmcs!(vcpu, GUEST_LDTR_AR, 0x10000); // (1<<16)
         wvmcs!(vcpu, GUEST_LDTR_BASE, 0x0);
@@ -670,11 +711,20 @@ impl HvVcpu {
         // efer |= X86_IA32_EFER_LMA;
         wvmcs!(vcpu, GUEST_IA32_EFER, efer);
 
+        wvmcs!(vcpu, CTRL_VMENTRY_MSR_LOAD_COUNT, 0);
+        wvmcs!(vcpu, GUEST_LINK_POINTER, !0x0);
+        // See Intel SDM3B Figure 17-3
+        // ia32_debugctl &= 0b00000000_00000000_11011111_11000011;
+        let mask = 0xDFC3;
+        wvmcs!(vcpu, GUEST_IA32_DEBUGCTL, 0x0);
+        // wvmcs!(vcpu, GUEST_LINK_POINTER, 0x1234123);
+
         self.enter_long_mode(efer).unwrap();
 
         Ok(())
     }
 
+    // adapted from qemu
     pub fn enter_long_mode(&self, mut efer: u64) -> Result<(), Error> {
         let vcpu = &self.vcpu;
         let ar_type_mask = 0x0f;
@@ -709,7 +759,8 @@ impl HvVcpu {
                     match exit_reason {
                         ER_EXC_NMI => {
                             println!(
-                                "Got Exeption Exit reason IRQ info [{:#X}]",
+                                "Got Exeption Exit reason IRQ info [{:#X}][{:#b}]",
+                                rvmcs!(vcpu, RO_VMEXIT_IRQ_INFO),
                                 rvmcs!(vcpu, RO_VMEXIT_IRQ_INFO)
                             );
                             break;
@@ -1330,6 +1381,8 @@ impl HvVcpu {
         print_vmcs!(vcpu, "VMENTRY_IRQ_INFO", CTRL_VMENTRY_IRQ_INFO);
         print_vmcs!(vcpu, "EXECUTION_BITMAP", CTRL_EXC_BITMAP);
         print_vmcs!(vcpu, "EPTP", CTRL_EPTP);
+        print_vmcs!(vcpu, "VMENTRY_MSR_LOAD_COUNT", CTRL_VMENTRY_MSR_LOAD_COUNT);
+        print_vmcs!(vcpu, "VMENTRY_MSR_LOAD_ADDR", CTRL_VMENTRY_MSR_LOAD_ADDR);
 
         println!("");
         println!("~~~~ Exit reason ~~~~");
