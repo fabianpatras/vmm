@@ -5,7 +5,7 @@
 
 use hv::{
     x86::{
-        vmx::{read_capability, Capability::*, Reason, Reason::*, VCpuVmxExt, Vmcs::*},
+        vmx::{read_capability, Capability::*, Reason::*, VCpuVmxExt, Vmcs::*},
         Reg::*,
         VcpuExt,
     },
@@ -119,6 +119,8 @@ const MSR_IA32_FS_BASE: u32 = 0xc0000100;
 const MSR_IA32_GS_BASE: u32 = 0xc0000101;
 const MSR_IA32_KERNEL_GS_BASE: u32 = 0xc0000102;
 const MSR_IA32_TSC_AUX: u32 = 0xc0000103;
+
+const VCPU_DEADLINE_FOREVER: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
 // Read register
 macro_rules! rreg {
@@ -502,13 +504,9 @@ impl HvVcpu {
         // this is the 10-th physical page
         let page_directory_pa = 10 * PAGE_SIZE_32_BIT;
 
-        // this is the 11-th physical page
-        let page_2mb_pa = 11 * PAGE_SIZE_32_BIT;
-
         let pml4_address = GuestAddress(pml4_pa as u64);
         let pdpt_address = GuestAddress(pdpt_pa as u64);
         let page_directory_address = GuestAddress(page_directory_pa as u64);
-        let page_2mb_address = GuestAddress(page_2mb_pa as u64);
 
         wvmcs!(vcpu, GUEST_CR3, pml4_address.raw_value());
 
@@ -541,7 +539,7 @@ impl HvVcpu {
         for i in 0..512 {
             guest_memory
                 .write_obj(
-                    (i << 21) | X86_PDE_PS | X86_PDE_P | X86_PDE_RW | X86_PDE_U,
+                    (i << 21) | X86_PDE_P | X86_PDE_RW | X86_PDE_U | X86_PDE_PS,
                     // this will always be ok because there is enought room in a 4KB Page Directory structure
                     // for 512 64-bit entries
                     page_directory_address.unchecked_add(8 * i),
@@ -553,20 +551,22 @@ impl HvVcpu {
     }
 
     pub fn enable_native_msrs(&self) -> Result<(), Error> {
-		self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_CS, true).unwrap();
-		self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_EIP, true).unwrap();
-		self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_ESP, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_CS, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_EIP, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_ESP, true).unwrap();
         
-		self.vcpu.enable_native_msr(MSR_IA32_STAR, true).unwrap();
-		self.vcpu.enable_native_msr(MSR_IA32_CSTAR, true).unwrap();
-		self.vcpu.enable_native_msr(MSR_IA32_LSTAR, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_STAR, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_CSTAR, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_LSTAR, true).unwrap();
         
-		self.vcpu.enable_native_msr(MSR_IA32_TSC, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_TSC, true).unwrap();
+
+        // this MSR is the only madnatory one so far (not enabling causes a `hv` framework error on run)
 		self.vcpu.enable_native_msr(MSR_IA32_KERNEL_GS_BASE, true).unwrap();
 
-        self.vcpu.enable_native_msr(MSR_IA32_FS_BASE, true).unwrap();
-		self.vcpu.enable_native_msr(MSR_IA32_GS_BASE, true).unwrap();
-		self.vcpu.enable_native_msr(MSR_IA32_TSC_AUX, true).unwrap();
+        // self.vcpu.enable_native_msr(MSR_IA32_FS_BASE, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_GS_BASE, true).unwrap();
+		// self.vcpu.enable_native_msr(MSR_IA32_TSC_AUX, true).unwrap();
 
         Ok(())
     }
@@ -751,7 +751,7 @@ impl HvVcpu {
 
         println!("Running vcpu...");
         loop {
-            match vcpu.run() {
+            match vcpu.run_until(VCPU_DEADLINE_FOREVER) {
                 Ok(()) => {
                     let exit_reason = rvmcs!(vcpu, RO_EXIT_REASON);
                     let exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC);
@@ -804,14 +804,15 @@ impl HvVcpu {
 
     pub fn real_mode_code_test<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let code: &[u8] = &[
-            0xB8, 0x05, 0x00, // mov ax, 0x05
+            0x48, 0xB8, 0xDD, 0x33, 0xCC, 0x22, 0xBB, 0x11, 0xAA, 0x00, // mov RAX, 0x00AA_11BB_22CC_33DD
+            // 0xB8, 0x05, 0x00, // mov ax, 0x05
+            0xF4, // hlt
             0xBB, 0x07, 0x00, // mov bx, 0x07
             0x00, 0xC3, // add bl, al
-            0xF4, // hlt
                   // 0x0F, 0x01, 0xC1, // VMCALL -> creates a VM Exit
         ];
 
-        let guest_addr: u64 = 10 * 0x1000;
+        let guest_addr: u64 = 20 * 0x1000;
 
         let vcpu = &self.vcpu;
 
@@ -819,7 +820,7 @@ impl HvVcpu {
             .write(code, GuestAddress(guest_addr))
             .expect("Could not write CODE to guest memory");
 
-        wreg!(vcpu, RIP, 0x0 as _);
+        wreg!(vcpu, RIP, (20 * 0x1000) as _);
         wreg!(vcpu, RFLAGS, 0x2);
         wreg!(vcpu, RSP, 0x0);
 
