@@ -6,30 +6,70 @@
 use hv::{
     x86::{
         vmx::{read_capability, Capability::*, Reason::*, VCpuVmxExt, Vmcs::*},
+        Reg,
         Reg::*,
         VcpuExt,
     },
     Error, Vcpu, Vm,
 };
-use linux_loader::loader::{elf::Elf, KernelLoader};
+use linux_loader::{
+    configurator::{linux::LinuxBootConfigurator, BootConfigurator, BootParams},
+    loader::{
+        // bzimage::BzImage,
+        bootparam::boot_params,
+        elf::Elf,
+        KernelLoader,
+    },
+};
+
 use std::{
     fs::File,
     io::{BufReader, Read},
     mem,
     sync::Arc,
 };
-use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory};
+use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
 /// The offset at which GDT resides in memory.
-pub const BOOT_GDT_OFFSET: u64 = 0x500;
+const BOOT_GDT_OFFSET: u64 = 0x500;
 /// The offset at which IDT resides in memory.
-pub const BOOT_IDT_OFFSET: u64 = 0x520;
+const BOOT_IDT_OFFSET: u64 = 0x520;
 /// Maximum number of GDT entries as defined in the Intel Specification.
-pub const MAX_GDT_SIZE: usize = 1 << 13;
+const MAX_GDT_SIZE: usize = 1 << 13;
 /// Address of the zeropage, where Linux kernel boot parameters are written.
-pub const ZEROPG_START: u64 = 0x7000;
+const ZEROPG_START: u64 = 0x7000;
+/// Address where the kernel command line is written.
+const CMDLINE_START: u64 = 0x0002_0000;
 /// Initial stack for the boot CPU.
 const BOOT_STACK_POINTER: u64 = 0x8ff0;
+/// Default highmem start
+const HIGHMEM_START_ADDRESS: u64 = 0x10_0000;
+/// Default kernel command line.
+const DEFAULT_KERNEL_CMDLINE: &str = "panic=1 pci=off";
+
+// x86_64 boot constants. See https://www.kernel.org/doc/Documentation/x86/boot.txt for the full
+// documentation.
+// Header field: `boot_flag`. Must contain 0xaa55.
+const KERNEL_BOOT_FLAG_MAGIC: u16 = 0xaa55;
+// Header field: `header`. Must contain the magic number `HdrS` (0x5372_6448).
+const KERNEL_HDR_MAGIC: u32 = 0x5372_6448;
+// Header field: `type_of_loader`.
+const KERNEL_LOADER_OTHER: u8 = 0xff;
+// Header field: `kernel_alignment`. Alignment unit required by a relocatable kernel.
+const KERNEL_MIN_ALIGNMENT_BYTES: u32 = 0x0100_0000;
+
+// Start address for the EBDA (Extended Bios Data Area).
+// See https://wiki.osdev.org/Memory_Map_(x86) for more information.
+const EBDA_START: u64 = 0x0009_fc00;
+// RAM memory type.
+const E820_RAM: u32 = 1;
+
+/// First address past 32 bits is where the MMIO gap ends.
+const MMIO_GAP_END: u64 = 1 << 32;
+/// Size of the MMIO gap.
+const MMIO_GAP_SIZE: u64 = 768 << 20;
+/// The start of the MMIO gap (memory area reserved for MMIO devices).
+const MMIO_GAP_START: u64 = MMIO_GAP_END - MMIO_GAP_SIZE;
 
 // page map level 4 start offset
 const PML4_START: u64 = 0x9000;
@@ -100,12 +140,15 @@ const PAGE_SIZE_32_BIT: u32 = 4096; //bytes
 
 // exit reasons as u64
 const ER_EXC_NMI: u64 = EXC_NMI as u64;
+const ER_CPUID: u64 = CPUID as u64;
 const ER_HLT: u64 = HLT as u64;
+const ER_MOV_CR: u64 = MOV_CR as u64;
+const ER_RDMSR: u64 = RDMSR as u64;
+const ER_WRMSR: u64 = WRMSR as u64;
 const ER_VMENTRY_GUEST: u64 = VMENTRY_GUEST as u64;
 const ER_EPT_VIOLATION: u64 = EPT_VIOLATION as u64;
 
-
-// See Intel SDM4 Table 2-2 MSR indexes 
+// See Intel SDM4 Table 2-2 MSR indexes
 const MSR_IA32_TSC: u32 = 0x00000010;
 const MSR_IA32_SYSENTER_CS: u32 = 0x00000174;
 const MSR_IA32_SYSENTER_ESP: u32 = 0x00000175;
@@ -121,6 +164,12 @@ const MSR_IA32_KERNEL_GS_BASE: u32 = 0xc0000102;
 const MSR_IA32_TSC_AUX: u32 = 0xc0000103;
 
 const VCPU_DEADLINE_FOREVER: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+
+const CPUID_LZCNT: u64 = 1 << 5;
+
+const REGS: [Reg; 16] = [
+    RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15,
+];
 
 // Read register
 macro_rules! rreg {
@@ -551,29 +600,30 @@ impl HvVcpu {
     }
 
     pub fn enable_native_msrs(&self) -> Result<(), Error> {
-		// self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_CS, true).unwrap();
-		// self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_EIP, true).unwrap();
-		// self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_ESP, true).unwrap();
-        
-		// self.vcpu.enable_native_msr(MSR_IA32_STAR, true).unwrap();
-		// self.vcpu.enable_native_msr(MSR_IA32_CSTAR, true).unwrap();
-		// self.vcpu.enable_native_msr(MSR_IA32_LSTAR, true).unwrap();
-        
-		// self.vcpu.enable_native_msr(MSR_IA32_TSC, true).unwrap();
+        // self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_CS, true).unwrap();
+        // self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_EIP, true).unwrap();
+        // self.vcpu.enable_native_msr(MSR_IA32_SYSENTER_ESP, true).unwrap();
+
+        // self.vcpu.enable_native_msr(MSR_IA32_STAR, true).unwrap();
+        // self.vcpu.enable_native_msr(MSR_IA32_CSTAR, true).unwrap();
+        // self.vcpu.enable_native_msr(MSR_IA32_LSTAR, true).unwrap();
+
+        // self.vcpu.enable_native_msr(MSR_IA32_TSC, true).unwrap();
 
         // this MSR is the only madnatory one so far (not enabling causes a `hv` framework error on run)
-		self.vcpu.enable_native_msr(MSR_IA32_KERNEL_GS_BASE, true).unwrap();
+        self.vcpu
+            .enable_native_msr(MSR_IA32_KERNEL_GS_BASE, true)
+            .unwrap();
 
         // self.vcpu.enable_native_msr(MSR_IA32_FS_BASE, true).unwrap();
-		// self.vcpu.enable_native_msr(MSR_IA32_GS_BASE, true).unwrap();
-		// self.vcpu.enable_native_msr(MSR_IA32_TSC_AUX, true).unwrap();
+        // self.vcpu.enable_native_msr(MSR_IA32_GS_BASE, true).unwrap();
+        // self.vcpu.enable_native_msr(MSR_IA32_TSC_AUX, true).unwrap();
 
         Ok(())
     }
 
     pub fn protected_mode_setup<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let vcpu = &self.vcpu;
-
 
         self.enable_native_msrs().unwrap();
 
@@ -607,12 +657,12 @@ impl HvVcpu {
 
         // See Intel SMD3C 24.6.3 - setting a bit to 1 causes the exception to cauze a VM exit
         // See Intel SDM1 6.5.1 - Table 6-1 for exception details
-        wvmcs!(vcpu, CTRL_EXC_BITMAP, 0xffff_ffff);
-        // wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
+        // wvmcs!(vcpu, CTRL_EXC_BITMAP, 0xffff_ffff);
+        wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
         wvmcs!(vcpu, CTRL_CR0_MASK, 0x60000000);
         wvmcs!(vcpu, CTRL_CR0_SHADOW, 0x0);
-        wvmcs!(vcpu, CTRL_CR4_MASK, 0x0);
-        wvmcs!(vcpu, CTRL_CR4_SHADOW, 0x0);
+        wvmcs!(vcpu, CTRL_CR4_MASK, X86_CR4_VMXE);
+        wvmcs!(vcpu, CTRL_CR4_SHADOW, X86_CR4_VMXE);
 
         // Code segment
         wvmcs!(vcpu, GUEST_CS, 0x8);
@@ -729,25 +779,143 @@ impl HvVcpu {
         let vcpu = &self.vcpu;
         let ar_type_mask = 0x0f;
         let ar_type_busy_tss = 0x0b;
-        
+
         efer |= X86_IA32_EFER_LMA;
         wvmcs!(vcpu, GUEST_IA32_EFER, efer);
 
         let entry_ctls = rvmcs!(vcpu, CTRL_VMENTRY_CONTROLS);
-        wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, entry_ctls | CTRL_VMENTRY_CONTROLS_IA32_MODE);
+        wvmcs!(
+            vcpu,
+            CTRL_VMENTRY_CONTROLS,
+            entry_ctls | CTRL_VMENTRY_CONTROLS_IA32_MODE
+        );
 
         if efer & X86_IA32_EFER_LME != 0 {
             let tr_ar = rvmcs!(vcpu, GUEST_TR_AR);
             if tr_ar & ar_type_mask != ar_type_busy_tss {
-                wvmcs!(vcpu, GUEST_TR_AR, (tr_ar & !ar_type_mask) | ar_type_busy_tss);
+                wvmcs!(
+                    vcpu,
+                    GUEST_TR_AR,
+                    (tr_ar & !ar_type_mask) | ar_type_busy_tss
+                );
             }
         }
 
         Ok(())
     }
 
+    fn handle_cpuid(&self) -> Result<(), &str> {
+        let vcpu = &self.vcpu;
+        let eax = rreg!(vcpu, RAX);
+        let ecx = rreg!(vcpu, RCX);
+
+        match eax {
+            0x0 => {
+                wreg!(vcpu, RAX, 0x0); // 0?
+                wreg!(vcpu, RBX, 0x4661_6269); // Fabi
+                wreg!(vcpu, RCX, 0x4661_6269); // Fabi
+                wreg!(vcpu, RDX, 0x4661_6269); // Fabi
+            }
+
+            0x80000000 => {
+                wreg!(vcpu, RAX, 0x5); // 0?
+                wreg!(vcpu, RBX, 0x0); // 0
+                wreg!(vcpu, RCX, 0x0); // 0
+                wreg!(vcpu, RDX, 0x0); // 0
+            }
+
+            0x80000001 => {
+                wreg!(vcpu, RCX, CPUID_LZCNT); // 0
+                // wreg!(vcpu, RDX, 0x0); // 0
+            }
+
+            _ => {
+                return Err("cpuid not supported");
+            }
+        }
+
+        Ok(())
+    }
+
+    // See Intel SDM3C Table 27-3
+    fn handle_mov_cr(&self) -> Result<(), &str> {
+        let vcpu = &self.vcpu;
+
+        let exit_qual = rvmcs!(vcpu, RO_EXIT_QUALIFIC);
+        let reg = exit_qual & 0x0f;
+        let instr = (exit_qual >> 4) & 0x03;
+        let source = (exit_qual >> 8) & 0x0f;
+
+        if reg != 4 {
+            return Err("Register \"must\" be CR4");
+        }
+
+        if instr != 0 {
+            return Err("Instr type not handled");
+        }
+
+        wreg!(
+            vcpu,
+            CR4,
+            rreg!(vcpu, REGS[source as usize]) | rvmcs!(vcpu, CTRL_CR4_SHADOW)
+        );
+
+        Ok(())
+    }
+
+    fn handle_msr_access(&self, read: bool) -> Result<(), &str> {
+        let vcpu = &self.vcpu;
+        let msr_index = rreg!(vcpu, RCX) as u32;
+        let mut val: u64 = (rreg!(vcpu, RDX) << 32) | (rreg!(vcpu, RAX) & 0xFFFF_FFFF);
+
+        println!("MSR Access Read[{}] index[{:#X}] [{:#X}]", read, msr_index, val);
+
+        if read {
+            match msr_index {
+                MSR_IA32_EFER => {
+                    val = rvmcs!(vcpu, GUEST_IA32_EFER);
+                }
+
+                _ => {
+                    return Err("msr_index not supported for read")
+                }
+            }
+
+            wreg!(vcpu, RAX, val);
+            wreg!(vcpu, RDX, val >> 32);
+        } else {
+            match msr_index {
+                MSR_IA32_EFER => {
+                    wvmcs!(vcpu, GUEST_IA32_EFER, val | (X86_IA32_EFER_LMA | X86_IA32_EFER_LME));
+                }
+
+                MSR_IA32_GS_BASE => {
+                    wvmcs!(vcpu, GUEST_GS_BASE, val);
+                }
+
+                _ => {
+                    return Err("msr_index not supported for write")
+                }
+            }
+        }
+
+
+        Ok(())
+    }
+
+    fn advance_rip(&self) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+        let rip = rreg!(vcpu, RIP);
+        let instr_len = rvmcs!(vcpu, RO_VMEXIT_INSTR_LEN);
+
+        wreg!(vcpu, RIP, rip + instr_len);
+
+        Ok(())
+    }
+
     pub fn run_cpu_handle_exits(&self) -> Result<(), Error> {
         let vcpu = &self.vcpu;
+        let mut exits: u64 = 0;
 
         println!("Running vcpu...");
         loop {
@@ -755,6 +923,7 @@ impl HvVcpu {
                 Ok(()) => {
                     let exit_reason = rvmcs!(vcpu, RO_EXIT_REASON);
                     let exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC);
+                    exits += 1;
 
                     match exit_reason {
                         ER_EXC_NMI => {
@@ -765,9 +934,32 @@ impl HvVcpu {
                             );
                             break;
                         }
+                        ER_CPUID => {
+                            println!(
+                                "EAX:ECX = [{:#X}:{:#X}]",
+                                rreg!(vcpu, RAX),
+                                rreg!(vcpu, RCX)
+                            );
+                            self.handle_cpuid().unwrap();
+                            self.advance_rip().unwrap();
+                        }
                         ER_HLT => {
                             println!("Got HLT Exit reason");
                             break;
+                        }
+                        ER_MOV_CR => {
+                            println!("mov to cr");
+                            println!("exit qual [{:#X}][{:#b}]", exit_qualific, exit_qualific);
+                            self.handle_mov_cr().unwrap();
+                            self.advance_rip().unwrap();
+                        }
+                        ER_RDMSR => {
+                            self.handle_msr_access(true).unwrap();
+                            self.advance_rip().unwrap();
+                        }
+                        ER_WRMSR => {
+                            self.handle_msr_access(false).unwrap();
+                            self.advance_rip().unwrap();
                         }
                         er if (er & VM_EXIT_VM_ENTRY_FAILURE) != 0 => {
                             println!(
@@ -799,16 +991,20 @@ impl HvVcpu {
             }
         }
 
+        println!("Exited after [{}] VM Exits!", exits);
+
         Ok(())
     }
 
     pub fn real_mode_code_test<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let code: &[u8] = &[
-            0x48, 0xB8, 0xDD, 0x33, 0xCC, 0x22, 0xBB, 0x11, 0xAA, 0x00, // mov RAX, 0x00AA_11BB_22CC_33DD
+            0x48, 0xB8, 0xDD, 0x33, 0xCC, 0x22, 0xBB, 0x11, 0xAA,
+            0x00, // mov RAX, 0x00AA_11BB_22CC_33DD
             // 0xB8, 0x05, 0x00, // mov ax, 0x05
             0xF4, // hlt
             0xBB, 0x07, 0x00, // mov bx, 0x07
-            0x00, 0xC3, // add bl, al
+            0x00,
+            0xC3, // add bl, al
                   // 0x0F, 0x01, 0xC1, // VMCALL -> creates a VM Exit
         ];
 
@@ -1172,21 +1368,127 @@ impl HvVcpu {
         Ok(())
     }
 
-    pub fn load_kernel<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
-        let mut kernel_image =
-            File::open("/Users/ec2-user/repos/vmm/microvm-kernel-initramfs-hello-x86_64").unwrap();
+    fn add_e820_entry(
+        &self,
+        params: &mut boot_params,
+        addr: u64,
+        size: u64,
+        mem_type: u32,
+    ) -> Result<(), &str> {
+        if params.e820_entries >= params.e820_table.len() as u8 {
+            return Err("E820 full"); // TODO: some kind of internal error
+        }
+
+        params.e820_table[params.e820_entries as usize].addr = addr;
+        params.e820_table[params.e820_entries as usize].size = size;
+        params.e820_table[params.e820_entries as usize].type_ = mem_type;
+        params.e820_entries += 1;
+
+        Ok(())
+    }
+
+    pub fn load_kernel_elf(&self, guest_memory: &GuestMemoryMmap, path: &str) -> Result<(), Error> {
+        let mut kernel_image = File::open(path).unwrap();
         let zero_page_addr = GuestAddress(ZEROPG_START);
+        let highmem_start_address = GuestAddress(HIGHMEM_START_ADDRESS);
+        let mmio_gap_start = GuestAddress(MMIO_GAP_START);
+        let mmio_gap_end = GuestAddress(MMIO_GAP_END);
 
         // Load the kernel into guest memory.
         let kernel_load = Elf::load(
             guest_memory,
             None,
             &mut kernel_image,
-            None, // TODO: change me to something ok
+            Some(highmem_start_address), // TODO: change me to something ok
+                                         // None
         )
         .unwrap();
 
-        //
+        let mut params = boot_params::default();
+
+        params.hdr.boot_flag = KERNEL_BOOT_FLAG_MAGIC;
+        params.hdr.header = KERNEL_HDR_MAGIC;
+        params.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
+
+        if params.hdr.type_of_loader == 0 {
+            params.hdr.type_of_loader = KERNEL_LOADER_OTHER;
+        }
+
+        // Add an entry for EBDA itself.
+        self.add_e820_entry(&mut params, 0, EBDA_START, E820_RAM)
+            .unwrap();
+
+        // Add entries for the usable RAM regions (potentially surrounding the MMIO gap).
+        let last_addr = guest_memory.last_addr();
+        if last_addr < mmio_gap_start {
+            self.add_e820_entry(
+                &mut params,
+                highmem_start_address.raw_value(),
+                // The unchecked + 1 is safe because:
+                // * overflow could only occur if last_addr - himem_start == u64::MAX
+                // * last_addr is smaller than mmio_gap_start, a valid u64 value
+                // * last_addr - himem_start is also smaller than mmio_gap_start
+                last_addr
+                    .checked_offset_from(highmem_start_address)
+                    // .ok_or(Error::HimemStartPastMemEnd)? // TODO: error handling
+                    .unwrap()
+                    + 1,
+                E820_RAM,
+            )
+            .unwrap();
+        } else {
+            self.add_e820_entry(
+                &mut params,
+                highmem_start_address.raw_value(),
+                mmio_gap_start
+                    .checked_offset_from(highmem_start_address)
+                    // .ok_or(Error::HimemStartPastMmioGapStart)? // TODO: error handling
+                    .unwrap(),
+                E820_RAM,
+            )
+            .unwrap();
+
+            if last_addr > mmio_gap_end {
+                self.add_e820_entry(
+                    &mut params,
+                    mmio_gap_end.raw_value(),
+                    // The unchecked_offset_from is safe, guaranteed by the `if` condition above.
+                    // The unchecked + 1 is safe because:
+                    // * overflow could only occur if last_addr == u64::MAX and mmio_gap_end == 0
+                    // * mmio_gap_end > mmio_gap_start, which is a valid u64 => mmio_gap_end > 0
+                    last_addr.unchecked_offset_from(mmio_gap_end) + 1,
+                    E820_RAM,
+                )
+                .unwrap();
+            }
+        }
+
+        // Add the kernel command line to the boot parameters.
+        params.hdr.cmd_line_ptr = CMDLINE_START as u32;
+        params.hdr.cmdline_size = DEFAULT_KERNEL_CMDLINE.len() as u32 + 1;
+
+        guest_memory
+            .write_slice(
+                DEFAULT_KERNEL_CMDLINE.as_bytes(),
+                GuestAddress(CMDLINE_START),
+            )
+            .unwrap();
+
+        // Write the boot parameters in the zeropage.
+        LinuxBootConfigurator::write_bootparams::<GuestMemoryMmap>(
+            &BootParams::new::<boot_params>(&params, zero_page_addr),
+            guest_memory,
+        )
+        .unwrap(); // TODO: error handling
+
+        // println!("protocol [{:#X}]", kernel_load.kernel_load.raw_value());
+        // println!("setup_header [{:?}]", kernel_load.setup_header);
+
+        wvmcs!(self.vcpu, GUEST_RIP, kernel_load.kernel_load.raw_value());
+        wvmcs!(self.vcpu, GUEST_RFLAGS, 0x0000_0000_0000_0002_u64);
+        wvmcs!(self.vcpu, GUEST_RSP, BOOT_STACK_POINTER);
+        wreg!(self.vcpu, RBP, BOOT_STACK_POINTER);
+        wreg!(self.vcpu, RSI, ZEROPG_START);
 
         Ok(())
     }
@@ -1390,6 +1692,8 @@ impl HvVcpu {
         print_vmcs!(vcpu, "EXIT_REASON", RO_EXIT_REASON);
         print_vmcs!(vcpu, "EXIT_QUALIFIC", RO_EXIT_QUALIFIC);
         print_vmcs!(vcpu, "VMEXIT_INSTR_LEN", RO_VMEXIT_INSTR_LEN);
+        print_vmcs!(vcpu, "GUEST_LIN_ADDR", RO_GUEST_LIN_ADDR);
+        print_vmcs!(vcpu, "GUEST_PHYSICAL_ADDRESS", GUEST_PHYSICAL_ADDRESS);
 
         println!("");
         println!("~~~~ Guest State ~~~~");
@@ -1542,6 +1846,24 @@ impl HvVcpu {
         // print_vmcs!(vcpu, "HOST_IA32_SYSENTER_EIP", HOST_IA32_SYSENTER_EIP);
 
         println!("~~~~ EO VMCS Dump ~~~");
+        Ok(())
+    }
+
+    pub fn print_exit_instruction<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
+        let vcpu = &self.vcpu;
+        let rip = rreg!(vcpu, RIP);
+        let instr_len = rvmcs!(vcpu, RO_VMEXIT_INSTR_LEN);
+        let mut container: [u8; 16] = [0; 16];
+
+        guest_memory
+            .read(&mut container, GuestAddress(rip))
+            .unwrap();
+
+        for i in 0..16 {
+            print!("{:#x} ", container[i]);
+        }
+        println!("");
+
         Ok(())
     }
 }

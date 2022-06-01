@@ -1,4 +1,4 @@
-// use hv::x86::{VcpuExt, Reg};
+use hv::x86::{VcpuExt, Reg};
 // use hv::x86::VcpuExt;
 use hv::Error;
 use hv::Memory;
@@ -10,12 +10,13 @@ use hv::x86::VmOptions;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
 
 pub mod vcpu;
-use crate::vcpu::{HvVcpu};
+use crate::vcpu::HvVcpu;
 
 const GUEST_ADDR_START: u64 = 0x00;
 const KILO_BYTE: usize = 1024;
-// const MEGA_BYTE: usize = 1024 * KILO_BYTE;
-const MEM_SIZE: usize = 128 * KILO_BYTE;
+const MEGA_BYTE: usize = 1024 * KILO_BYTE;
+const GIGA_BYTE: usize = 1024 * MEGA_BYTE;
+const MEM_SIZE: usize = 2 * GIGA_BYTE;
 
 fn main() -> Result<(), Error> {
     let vm = hv::Vm::new(VmOptions::default())?;
@@ -34,43 +35,28 @@ fn main() -> Result<(), Error> {
             Memory::READ | Memory::WRITE | Memory::EXEC,
         )
         .expect("could not hv_vm_map");
-
-        // memset on VM memory
-        // unsafe {
-        //     libc::memset(x.as_ptr() as *mut c_void, 0, MEM_SIZE);
-        // }
     }
 
     let vcpu = HvVcpu::new(vm).unwrap();
-    // vcpu.init(&guest_memory).unwrap();
 
-    // vcpu.real_mode_setup().unwrap();
     vcpu.protected_mode_setup(&guest_memory).unwrap();
-    // vcpu.paging_mode_setup_32_bit(&guest_memory).unwrap();
-    // vcpu.paging_mode_setup_pae(&guest_memory).unwrap();
     vcpu.paging_mode_setup_4_level(&guest_memory).unwrap();
 
-    // vcpu.disable_ept().unwrap();
-    vcpu.real_mode_code_test(&guest_memory).unwrap();
+    // vcpu.real_mode_code_test(&guest_memory).unwrap();
 
-    // vcpu.dump_vmcs()?;
-    // vcpu.vcpu.run()?;
-    // let rc = vcpu
-    //     .vcpu
-    //     .read_vmcs(Vmcs::RO_EXIT_REASON)
-    //     .expect("Failed to read exit reason");
+    vcpu.load_kernel_elf(
+        &guest_memory,
+        "/Users/ec2-user/repos/vmm/resources/kernel/microvm-kernel-initramfs-hello-x86_64",
+    )
+    .unwrap();
+    // vcpu.load_kernel_bzimage(&guest_memory).unwrap();
 
-    // println!("rc = [{:#x}]", rc);
-    // println!(
-    //     "VM entry failure [{}] exit reason [{}]",
-    //     (rc & VM_EXIT_VM_ENTRY_FAILURE) != 0,
-    //     (rc & !VM_EXIT_VM_ENTRY_FAILURE)
-    // );
-
-    // let efer = vcpu.vcpu.read_vmcs(Vmcs::GUEST_IA32_EFER)?;
-
-    // println!("bit LME [{}]", (efer & X86_IA32_EFER_LME) != 0);
-    // println!("bit LMA [{}]", (efer & X86_IA32_EFER_LMA) != 0);
+    match vcpu.run_cpu_handle_exits() {
+        Err(x) => println!("Err [{}] at RIP [{:#X}]", x, vcpu.vcpu.read_register(Reg::RIP).unwrap()),
+        Ok(_) => {}
+    }
+    // vcpu.dump_vmcs().unwrap();
+    // vcpu.print_exit_instruction(&guest_memory).unwrap();
 
     Ok(())
 }
