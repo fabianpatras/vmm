@@ -115,6 +115,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "f_vmm"
+version = "0.1.0"
+dependencies = [
+ "hv",
+ "libc",
+ "linux-loader",
+ "vm-memory",
+ "vmm",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -152,16 +163,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5333a4c9076c1ae479461cb9fab7d4fb6f250119b32762879b44aff8f918e06"
 dependencies = [
  "bindgen",
-]
-
-[[package]]
-name = "inner_vmm"
-version = "0.1.0"
-dependencies = [
- "hv",
- "libc",
- "linux-loader",
- "vm-memory",
 ]
 
 [[package]]
@@ -316,6 +317,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ccb82d61f80a663efe1f787a51b16b5a51e3314d6ac365b08639f52387b33f3"
 
 [[package]]
+name = "vcpu"
+version = "0.1.0"
+dependencies = [
+ "hv",
+ "vm-memory",
+]
+
+[[package]]
 name = "vec_map"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -326,6 +335,15 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "vm"
+version = "0.1.0"
+dependencies = [
+ "hv",
+ "vcpu",
+ "vm-memory",
+]
 
 [[package]]
 name = "vm-memory"
@@ -342,9 +360,9 @@ name = "vmm"
 version = "0.1.0"
 dependencies = [
  "hv",
- "inner_vmm",
- "libc",
  "linux-loader",
+ "vcpu",
+ "vm",
  "vm-memory",
 ]
 

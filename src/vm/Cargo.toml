@@ -1,23 +1,13 @@
 [package]
-name = "f_vmm"
+name = "vm"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[workspace]
-members = [
-    "src/vmm",
-]
-
 [dependencies]
-
-# inner_vmm = { path = "src/inner_vmm" }
 
 hv = "0.1.2"
 vm-memory = { version = ">=0.8.0", features = ["backend-mmap"] }
-linux-loader = { version = "0.4.0", features = ["bzimage"] }
 
-libc = "0.2.122"
-
-vmm = { path = "src/vmm" }
+vcpu = { path = "../vcpu" }
