@@ -131,6 +131,11 @@ pub const MSR_IA32_GS_BASE: u32 = 0xc0000101;
 pub const MSR_IA32_KERNEL_GS_BASE: u32 = 0xc0000102;
 pub const MSR_IA32_TSC_AUX: u32 = 0xc0000103;
 
+// extra msr
+pub const MSR_IA32_BIOS_SIGN_ID: u32 = 0x0000008b;
+pub const MSR_IA32_ARCH_CAPABILITIES: u32 = 0x0000010a;
+pub const MSR_IA32_MISC_ENABLE: u32 = 0x000001a0;
+
 pub const VCPU_DEADLINE_FOREVER: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
 // exit reasons as u64

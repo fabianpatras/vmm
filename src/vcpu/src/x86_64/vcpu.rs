@@ -4,6 +4,8 @@ use crate::x86_64::exit_handler::{Error as ExitHandlerError, ExitHandler};
 use crate::x86_64::gdt::{Gdt, SegmentDescriptor};
 use crate::x86_64::vmx::*;
 use crate::{rreg, rvmcs, wreg, wvmcs};
+use crate::x86_64::cpuid::*;
+use crate::x86_64::cpu_data::CpuData;
 
 use hv::{
     x86::{
@@ -18,6 +20,7 @@ use vm_memory::{Address, Bytes, GuestAddress, GuestMemory};
 
 pub struct HvVcpu {
     vcpu: Vcpu,
+    data: CpuData,
 }
 
 #[derive(Debug)]
@@ -46,7 +49,7 @@ impl From<hv::Error> for Error {
 impl HvVcpu {
     pub fn new<M: GuestMemory>(vm: Arc<hv::Vm>, guest_memory: &M) -> Result<HvVcpu, Error> {
         let vcpu = vm.create_cpu().map_err(Error::HvCreateVcpu)?;
-        let hv_vcpu = HvVcpu { vcpu };
+        let hv_vcpu = HvVcpu { vcpu, data: Default::default() };
 
         hv_vcpu.set_up_protected_mode(guest_memory)?;
 
@@ -399,7 +402,7 @@ impl HvVcpu {
 
     pub fn print_exit_instruction<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let vcpu = &self.vcpu;
-        let rip = rreg!(vcpu, RIP);
+        let rip = rvmcs!(vcpu, GUEST_PHYSICAL_ADDRESS);
         let instr_len = rvmcs!(vcpu, RO_VMEXIT_INSTR_LEN);
         let mut container: [u8; 16] = [0; 16];
 
@@ -407,7 +410,7 @@ impl HvVcpu {
             .read(&mut container, GuestAddress(rip))
             .unwrap();
 
-        for i in 0..instr_len {
+        for i in 0..16 {
             print!("{:#x} ", container[i as usize]);
         }
         println!("");
@@ -489,6 +492,7 @@ impl HvVcpu {
         let vcpu = &self.vcpu;
         let rip = rreg!(vcpu, RIP);
         let instr_len = rvmcs!(vcpu, RO_VMEXIT_INSTR_LEN);
+        println!("\t> Advancind RIP from [{:#X}] to [{:#X}]", rip, rip + instr_len);
 
         wreg!(vcpu, RIP, rip + instr_len);
 
@@ -525,22 +529,22 @@ impl HvVcpu {
     }
 
     fn enable_native_msrs(vcpu: &Vcpu) -> Result<(), hv::Error> {
-        // vcpu.enable_native_msr(MSR_IA32_SYSENTER_CS, true)?;
-        // vcpu.enable_native_msr(MSR_IA32_SYSENTER_EIP, true)?;
-        // vcpu.enable_native_msr(MSR_IA32_SYSENTER_ESP, true)?;
+        vcpu.enable_native_msr(MSR_IA32_SYSENTER_CS, true)?;
+        vcpu.enable_native_msr(MSR_IA32_SYSENTER_EIP, true)?;
+        vcpu.enable_native_msr(MSR_IA32_SYSENTER_ESP, true)?;
 
-        // vcpu.enable_native_msr(MSR_IA32_STAR, true)?;
-        // vcpu.enable_native_msr(MSR_IA32_CSTAR, true)?;
-        // vcpu.enable_native_msr(MSR_IA32_LSTAR, true)?;
+        vcpu.enable_native_msr(MSR_IA32_STAR, true)?;
+        vcpu.enable_native_msr(MSR_IA32_CSTAR, true)?;
+        vcpu.enable_native_msr(MSR_IA32_LSTAR, true)?;
 
-        // vcpu.enable_native_msr(MSR_IA32_TSC, true)?;
+        vcpu.enable_native_msr(MSR_IA32_TSC, true)?;
 
         // this MSR is the only mandatory one so far (not enabling causes a `hv` framework error on run)
         vcpu.enable_native_msr(MSR_IA32_KERNEL_GS_BASE, true)?;
 
-        // vcpu.enable_native_msr(MSR_IA32_FS_BASE, true)?;
-        // vcpu.enable_native_msr(MSR_IA32_GS_BASE, true)?;
-        // vcpu.enable_native_msr(MSR_IA32_TSC_AUX, true)?;
+        vcpu.enable_native_msr(MSR_IA32_FS_BASE, true)?;
+        vcpu.enable_native_msr(MSR_IA32_GS_BASE, true)?;
+        vcpu.enable_native_msr(MSR_IA32_TSC_AUX, true)?;
 
         Ok(())
     }
@@ -551,31 +555,68 @@ impl ExitHandler for HvVcpu {
 
     fn handle_cpuid(&self) -> Result<(), Self::E> {
         let vcpu = &self.vcpu;
-        let eax = rreg!(vcpu, RAX);
-        // let ecx = rreg!(vcpu, RCX);
+        let eax = rreg!(vcpu, RAX) as u32;
+        let ecx = rreg!(vcpu, RCX) as u32;
 
+        // firstly use host inbuild cpuid then decide if we have to mask
+        // reject or pass in clear
+        let cpuidres = cpuid_count(eax, ecx);
+        
+        wreg!(vcpu, RAX, cpuidres.eax as u64);
+        wreg!(vcpu, RBX, cpuidres.ebx as u64);
+        wreg!(vcpu, RCX, cpuidres.ecx as u64);
+        wreg!(vcpu, RDX, cpuidres.edx as u64);
+
+        // 1) supported and we have to mask something -> early return
+        // 2) supported and we pass directly to host inbuild cpuid
+        // 3) not supported -> exit with Err
         match eax {
             0x0 => {
-                wreg!(vcpu, RAX, 0x0); // 0?
-                wreg!(vcpu, RBX, 0x4661_6269); // Fabi
-                wreg!(vcpu, RCX, 0x4661_6269); // Fabi
-                wreg!(vcpu, RDX, 0x4661_6269); // Fabi
-            }
-
+                // 1) supported
+            },
+            0x1 => {
+                // 1) supported
+            },
+            0x6 => {
+                // 2) supported, modified
+                wreg!(vcpu, RAX, CPUID_6_EAX);
+                wreg!(vcpu, RBX, 0x0);
+                wreg!(vcpu, RCX, 0x0);
+                wreg!(vcpu, RDX, 0x0);
+            },
+            0x7 => {
+                // 2) supported, modidfied
+                // disable SGX support
+                wreg!(vcpu, RBX, rreg!(vcpu, RBX) & !CPUID_7_0_EBX_SGX_MASK);
+                wreg!(vcpu, RCX, rreg!(vcpu, RCX) & !CPUID_7_0_ECX_SGX_LC_MASK);
+            },
+            0xB => {
+                // 1) supported
+            },
+            0xD => {
+                // 1) supported
+            },
+            0xF => {
+                // 1) supported
+            },
+            0x10 => {
+                // 1) supported
+            },
             0x80000000 => {
-                wreg!(vcpu, RAX, 0x5); // 0?
-                wreg!(vcpu, RBX, 0x0); // 0
-                wreg!(vcpu, RCX, 0x0); // 0
-                wreg!(vcpu, RDX, 0x0); // 0
-            }
-
+                // 1) supported
+            },
             0x80000001 => {
-                wreg!(vcpu, RCX, CPUID_LZCNT); // 0
-                // wreg!(vcpu, RDX, 0x0); // 0
-            }
+                // 1) supported
+            },
+            0x80000007 => {
+                // 1) supported
+            },
+            0x80000008 => {
+                // 1) supported
+            },
 
             _ => {
-                return Err(ExitHandlerError::CpuIdLeafNotSupported);
+                return Err(ExitHandlerError::CpuIdLeafNotSupported(eax, ecx));
             }
         }
 
@@ -622,10 +663,21 @@ impl ExitHandler for HvVcpu {
             match msr_index {
                 MSR_IA32_EFER => {
                     val = rvmcs!(vcpu, GUEST_IA32_EFER);
-                }
+                },
+                MSR_IA32_MISC_ENABLE => {
+                    val = self.data.msr_ia32_misc_enable;
+                },
+                MSR_IA32_BIOS_SIGN_ID => {
+                    val = 0;
+                    // nothing?
+                },
+                MSR_IA32_ARCH_CAPABILITIES => {
+                    val = 0;
+                    // nothing?
+                },
 
                 _ => {
-                    return Err(ExitHandlerError::MsrIndexNotSupportedRead);
+                    return Err(ExitHandlerError::MsrIndexNotSupportedRead(msr_index));
                 }
             }
 
@@ -637,15 +689,19 @@ impl ExitHandler for HvVcpu {
                     wvmcs!(
                         vcpu,
                         GUEST_IA32_EFER,
-                        val | (X86_IA32_EFER_LMA | X86_IA32_EFER_LME)
+                        (val | (X86_IA32_EFER_LMA | X86_IA32_EFER_LME)) & !(1)
                     );
-                }
+                },
 
                 MSR_IA32_GS_BASE => {
                     wvmcs!(vcpu, GUEST_GS_BASE, val);
-                }
+                },
+                MSR_IA32_BIOS_SIGN_ID => {
+                    // wvmcs!(vcpu, GUEST_GS_BASE, val);
+                    // nothing?
+                },
 
-                _ => return Err(ExitHandlerError::MsrIndexNotSupportedWrite),
+                _ => return Err(ExitHandlerError::MsrIndexNotSupportedWrite(msr_index)),
             }
         }
 

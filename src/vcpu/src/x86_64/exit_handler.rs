@@ -2,10 +2,11 @@
 pub enum Error {
     HvReadWrite(hv::Error),
 
-    MsrIndexNotSupportedRead,
-    MsrIndexNotSupportedWrite,
+    MsrIndexNotSupportedRead(u32),
+    MsrIndexNotSupportedWrite(u32),
 
-    CpuIdLeafNotSupported,
+    /// eax, ecx
+    CpuIdLeafNotSupported(u32, u32),
 
     CrAccessRegisterNotSupported,
     CrAccessAccessTypeNotSupported,

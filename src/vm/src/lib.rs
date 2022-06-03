@@ -77,8 +77,19 @@ impl HvVm {
     pub fn run<M: GuestMemory>(&self, rip: u64, guest_memory: &M) -> Result<(), Error> {
         self.vcpus[0].paging_mode_setup_4_level(guest_memory).map_err(Error::SetPaging)?;
         self.vcpus[0].set_regs_for_boot(rip).map_err(Error::SetRip)?;
-        self.vcpus[0].run().map_err(Error::RunVcpu)?;
-        self.vcpus[0].print_exit_instruction(guest_memory).map_err(Error::RunVcpu)?;
+        match self.vcpus[0].run().map_err(Error::RunVcpu) {
+            Ok(_) => {},
+            Err(Error::RunVcpu(HvVcpuError::ExitHandler(e))) => {
+                println!("Exit handler Error {:#?}", e);
+                // self.vcpus[0].dump_vcpu_state().unwrap();
+                self.vcpus[0].print_exit_instruction(guest_memory).map_err(Error::RunVcpu)?;
+            }
+            Err(e) => {
+                println!("HV error?\n[{:#?}]", e);
+                self.vcpus[0].dump_vcpu_state().unwrap();
+                self.vcpus[0].print_exit_instruction(guest_memory).map_err(Error::RunVcpu)?;
+            }
+        };
 
         Ok(())
     }
