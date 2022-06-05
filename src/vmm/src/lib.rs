@@ -34,10 +34,13 @@ impl Vmm {
         Ok(Vmm { vm, guest_memory })
     }
 
-    pub fn run(&self, kernel_path: &str) -> Result<(), Error> {
-        let kernel_result = load_kernel_elf(&self.guest_memory, kernel_path).map_err(Error::Bootloader)?;
+    pub fn run(&mut self, kernel_path: &str) -> Result<(), Error> {
+        let kernel_result =
+            load_kernel_elf(&self.guest_memory, kernel_path).map_err(Error::Bootloader)?;
 
-        self.vm.run(kernel_result.kernel_load.0, &self.guest_memory).map_err(Error::Vm)?;
+        self.vm
+            .run(kernel_result.kernel_load.0, &self.guest_memory)
+            .map_err(Error::Vm)?;
 
         Ok(())
     }

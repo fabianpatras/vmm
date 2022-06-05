@@ -135,6 +135,17 @@ pub const MSR_IA32_TSC_AUX: u32 = 0xc0000103;
 pub const MSR_IA32_BIOS_SIGN_ID: u32 = 0x0000008b;
 pub const MSR_IA32_ARCH_CAPABILITIES: u32 = 0x0000010a;
 pub const MSR_IA32_MISC_ENABLE: u32 = 0x000001a0;
+pub const MSR_IA32_TSC_ADJUST: u32 = 0x0000003b;
+pub const MSR_IA32_PAT: u32 = 0x00000277;
+pub const MSR_IA32_XSS: u32 = 0x00000da0;
+
+pub const MSR_IA32_MTRRCAP: u32 = 0x000000fe;
+pub const MSR_IA32_MTRR_DEF_TYPE: u32 = 0x000002ff;
+// these 2 are used as a range
+pub const MSR_IA32_MTRR_PHYSBASE0: u32 = 0x00000200;
+// ...
+pub const MSR_IA32_MTRR_PHYSMASK9: u32 = 0x00000213;
+pub const MSR_IA32_MTRR_FIX4K_F8000: u32 = 0x0000026f;
 
 pub const VCPU_DEADLINE_FOREVER: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
@@ -144,10 +155,12 @@ pub const ER_TRIPLE_FAULT: u64 = TRIPLE_FAULT as u64;
 pub const ER_CPUID: u64 = CPUID as u64;
 pub const ER_HLT: u64 = HLT as u64;
 pub const ER_MOV_CR: u64 = MOV_CR as u64;
+pub const ER_IO: u64 = IO as u64;
 pub const ER_RDMSR: u64 = RDMSR as u64;
 pub const ER_WRMSR: u64 = WRMSR as u64;
 pub const ER_VMENTRY_GUEST: u64 = VMENTRY_GUEST as u64;
 pub const ER_EPT_VIOLATION: u64 = EPT_VIOLATION as u64;
+pub const ER_XSETBV: u64 = XSETBV as u64;
 
 pub const CPUID_LZCNT: u64 = 1 << 5;
 

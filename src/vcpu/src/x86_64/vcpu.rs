@@ -1,11 +1,12 @@
+use std::io::Write;
 use std::sync::Arc;
 
+use crate::x86_64::cpu_data::CpuData;
+use crate::x86_64::cpuid::*;
 use crate::x86_64::exit_handler::{Error as ExitHandlerError, ExitHandler};
 use crate::x86_64::gdt::{Gdt, SegmentDescriptor};
 use crate::x86_64::vmx::*;
 use crate::{rreg, rvmcs, wreg, wvmcs};
-use crate::x86_64::cpuid::*;
-use crate::x86_64::cpu_data::CpuData;
 
 use hv::{
     x86::{
@@ -49,7 +50,10 @@ impl From<hv::Error> for Error {
 impl HvVcpu {
     pub fn new<M: GuestMemory>(vm: Arc<hv::Vm>, guest_memory: &M) -> Result<HvVcpu, Error> {
         let vcpu = vm.create_cpu().map_err(Error::HvCreateVcpu)?;
-        let hv_vcpu = HvVcpu { vcpu, data: Default::default() };
+        let hv_vcpu = HvVcpu {
+            vcpu,
+            data: Default::default(),
+        };
 
         hv_vcpu.set_up_protected_mode(guest_memory)?;
 
@@ -104,7 +108,8 @@ impl HvVcpu {
         // See Intel SMD3C 24.6.3 - setting a bit to 1 causes the exception to cauze a VM exit
         // See Intel SDM1 6.5.1 - Table 6-1 for exception details
         // wvmcs!(vcpu, CTRL_EXC_BITMAP, 0xffff_ffff);
-        wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
+        // wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
+        wvmcs!(vcpu, CTRL_EXC_BITMAP, 1 << 6); // #UD
         wvmcs!(vcpu, CTRL_CR0_MASK, 0x60000000);
         wvmcs!(vcpu, CTRL_CR0_SHADOW, 0x0);
         wvmcs!(vcpu, CTRL_CR4_MASK, X86_CR4_VMXE);
@@ -317,27 +322,29 @@ impl HvVcpu {
         Ok(())
     }
 
-    pub fn run(&self) -> Result<(), Error> {
-        let vcpu = &self.vcpu;
+    pub fn run(&mut self) -> Result<(), Error> {
+        // let vcpu = &mut self.vcpu;
         let mut exits: u64 = 0;
+        let mut exit_reason: u64;
+        let mut exit_qualific: u64;
 
         println!("Running vcpu...");
         loop {
-            vcpu.run_until(VCPU_DEADLINE_FOREVER)
-                .map_err(Error::HvRunVcpu)?;
-
-            let exit_reason = rvmcs!(vcpu, RO_EXIT_REASON);
-            let exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC);
+            // fighting with the borrowchecker
+            {
+                let vcpu = &mut self.vcpu;
+                vcpu.run_until(VCPU_DEADLINE_FOREVER)
+                    .map_err(Error::HvRunVcpu)?;
+                exit_reason = rvmcs!(vcpu, RO_EXIT_REASON);
+                exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC);
+            }
             exits += 1;
 
             match exit_reason {
                 ER_EXC_NMI => {
-                    println!(
-                        "Got Exeption Exit reason IRQ info [{:#X}][{:#b}]",
-                        rvmcs!(vcpu, RO_VMEXIT_IRQ_INFO),
-                        rvmcs!(vcpu, RO_VMEXIT_IRQ_INFO)
-                    );
-                    break;
+                    self.handle_nmi_interrupt().map_err(Error::ExitHandler)?;
+                    self.advance_rip()?;
+                    // break;
                 }
                 ER_TRIPLE_FAULT => {
                     println!("got triple fault!");
@@ -345,22 +352,21 @@ impl HvVcpu {
                     break;
                 }
                 ER_CPUID => {
-                    println!(
-                        "EAX:ECX = [{:#X}:{:#X}]",
-                        rreg!(vcpu, RAX),
-                        rreg!(vcpu, RCX)
-                    );
                     self.handle_cpuid().map_err(Error::ExitHandler)?;
                     self.advance_rip()?;
                 }
                 ER_HLT => {
-                    println!("Got HLT Exit reason");
+                    self.handle_hlt().map_err(Error::ExitHandler)?;
                     break;
                 }
                 ER_MOV_CR => {
                     println!("mov to cr");
                     println!("exit qual [{:#X}][{:#b}]", exit_qualific, exit_qualific);
                     self.handle_mov_cr().map_err(Error::ExitHandler)?;
+                    self.advance_rip()?;
+                }
+                ER_IO => {
+                    self.handle_io().map_err(Error::ExitHandler)?;
                     self.advance_rip()?;
                 }
                 ER_RDMSR => {
@@ -385,6 +391,12 @@ impl HvVcpu {
                         exit_qualific
                     );
                 }
+                ER_XSETBV => {
+                    println!("Got \"XSETBV\"");
+                    self.handle_xsetbv().map_err(Error::ExitHandler)?;
+                    self.advance_rip()?;
+                }
+
                 er => {
                     println!(
                         "Got unknown exit reason [{:#X}] with qualific [{:#X}]. Exiting...",
@@ -403,7 +415,7 @@ impl HvVcpu {
     pub fn print_exit_instruction<M: GuestMemory>(&self, guest_memory: &M) -> Result<(), Error> {
         let vcpu = &self.vcpu;
         let rip = rvmcs!(vcpu, GUEST_PHYSICAL_ADDRESS);
-        let instr_len = rvmcs!(vcpu, RO_VMEXIT_INSTR_LEN);
+        let _instr_len = rvmcs!(vcpu, RO_VMEXIT_INSTR_LEN);
         let mut container: [u8; 16] = [0; 16];
 
         guest_memory
@@ -492,7 +504,11 @@ impl HvVcpu {
         let vcpu = &self.vcpu;
         let rip = rreg!(vcpu, RIP);
         let instr_len = rvmcs!(vcpu, RO_VMEXIT_INSTR_LEN);
-        println!("\t> Advancind RIP from [{:#X}] to [{:#X}]", rip, rip + instr_len);
+        // println!(
+        //     "\t> Advancind RIP from [{:#X}] to [{:#X}]",
+        //     rip,
+        //     rip + instr_len
+        // );
 
         wreg!(vcpu, RIP, rip + instr_len);
 
@@ -553,15 +569,37 @@ impl HvVcpu {
 impl ExitHandler for HvVcpu {
     type E = ExitHandlerError;
 
+    fn handle_nmi_interrupt(&self) -> Result<(), Self::E> {
+        let vcpu = &self.vcpu;
+        self.dump_vcpu_state().unwrap();
+        println!(
+            "Got Exeption Exit reason IRQ info [{:#X}][{:#b}]",
+            rvmcs!(vcpu, RO_VMEXIT_IRQ_INFO),
+            rvmcs!(vcpu, RO_VMEXIT_IRQ_INFO)
+        );
+        Ok(())
+    }
+
+    fn handle_hlt(&self) -> Result<(), Self::E> {
+        println!("Got HLT Exit reason");
+        self.dump_vcpu_state().unwrap();
+        Ok(())
+    }
+
     fn handle_cpuid(&self) -> Result<(), Self::E> {
         let vcpu = &self.vcpu;
         let eax = rreg!(vcpu, RAX) as u32;
         let ecx = rreg!(vcpu, RCX) as u32;
 
+        println!(
+            "EAX:ECX = [{:#X}:{:#X}]",
+            rreg!(vcpu, RAX),
+            rreg!(vcpu, RCX)
+        );
         // firstly use host inbuild cpuid then decide if we have to mask
         // reject or pass in clear
         let cpuidres = cpuid_count(eax, ecx);
-        
+
         wreg!(vcpu, RAX, cpuidres.eax as u64);
         wreg!(vcpu, RBX, cpuidres.ebx as u64);
         wreg!(vcpu, RCX, cpuidres.ecx as u64);
@@ -573,47 +611,63 @@ impl ExitHandler for HvVcpu {
         match eax {
             0x0 => {
                 // 1) supported
-            },
+            }
             0x1 => {
-                // 1) supported
-            },
+                // 2) supported, modified to signal the guest is inside a hypervisor
+                wreg!(vcpu, RCX, rreg!(vcpu, RCX) | CPUID_1_ECX_HYPERVISOR);
+            }
             0x6 => {
                 // 2) supported, modified
                 wreg!(vcpu, RAX, CPUID_6_EAX);
                 wreg!(vcpu, RBX, 0x0);
                 wreg!(vcpu, RCX, 0x0);
                 wreg!(vcpu, RDX, 0x0);
-            },
+            }
             0x7 => {
                 // 2) supported, modidfied
                 // disable SGX support
                 wreg!(vcpu, RBX, rreg!(vcpu, RBX) & !CPUID_7_0_EBX_SGX_MASK);
                 wreg!(vcpu, RCX, rreg!(vcpu, RCX) & !CPUID_7_0_ECX_SGX_LC_MASK);
-            },
+            }
             0xB => {
                 // 1) supported
-            },
+            }
             0xD => {
                 // 1) supported
-            },
+            }
             0xF => {
                 // 1) supported
-            },
+            }
             0x10 => {
                 // 1) supported
-            },
+            }
+            0x15 => {
+                // Time Stamp Counter and Nominal Core Crystal Clock Information Leaf
+                // 1) supported
+            }
+            0x16 => {
+                // Processor Frequency Information Leaf
+                // 1) supported
+            }
+            0x40000000..=0x4fffffff => {
+                // 2) supported, modified because this is not a `real` cpuid leaf
+                wreg!(vcpu, RAX, 0x0);
+                wreg!(vcpu, RBX, 0x0);
+                wreg!(vcpu, RCX, 0x0);
+                wreg!(vcpu, RDX, 0x0);
+            }
             0x80000000 => {
                 // 1) supported
-            },
+            }
             0x80000001 => {
                 // 1) supported
-            },
+            }
             0x80000007 => {
                 // 1) supported
-            },
+            }
             0x80000008 => {
                 // 1) supported
-            },
+            }
 
             _ => {
                 return Err(ExitHandlerError::CpuIdLeafNotSupported(eax, ecx));
@@ -649,7 +703,40 @@ impl ExitHandler for HvVcpu {
         Ok(())
     }
 
-    fn handle_msr_access(&self, read: bool) -> Result<(), Self::E> {
+    fn handle_io(&self) -> Result<(), Self::E> {
+        let vcpu = &self.vcpu;
+        let exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC) as u32;
+        let size: u32 = (exit_qualific & 0x7) + 1;
+        let direction: u32 = (exit_qualific >> 3) & 0x1;
+        let _string = (exit_qualific >> 4) & 0x1;
+        let _rep = (exit_qualific >> 5) & 0x1;
+        let _operand = (exit_qualific >> 6) & 0x1;
+        let _port = (exit_qualific >> 16) & 0xFFFF;
+        let eax = rreg!(vcpu, RAX);
+
+        // println!(
+        //     "Attepting to [{}] [{}] bytes {} port [{}] = eax [{}]",
+        //     if direction == 0 { "write" } else { "read" },
+        //     size,
+        //     if direction == 0 { "to" } else { "from" },
+        //     _port,
+        //     eax,
+        // );
+        if direction == 0 {
+            match size {
+                1 => {
+                    let data = (eax & 0xFF) as u8;
+                    print!("{}", data as char);
+                }
+                _ => {}
+            }
+        }
+        std::io::stdout().flush().unwrap();
+
+        Ok(())
+    }
+
+    fn handle_msr_access(&mut self, read: bool) -> Result<(), Self::E> {
         let vcpu = &self.vcpu;
         let msr_index = rreg!(vcpu, RCX) as u32;
         let mut val: u64 = (rreg!(vcpu, RDX) << 32) | (rreg!(vcpu, RAX) & 0xFFFF_FFFF);
@@ -663,18 +750,32 @@ impl ExitHandler for HvVcpu {
             match msr_index {
                 MSR_IA32_EFER => {
                     val = rvmcs!(vcpu, GUEST_IA32_EFER);
-                },
+                }
                 MSR_IA32_MISC_ENABLE => {
                     val = self.data.msr_ia32_misc_enable;
-                },
+                }
                 MSR_IA32_BIOS_SIGN_ID => {
                     val = 0;
                     // nothing?
-                },
+                }
                 MSR_IA32_ARCH_CAPABILITIES => {
                     val = 0;
                     // nothing?
-                },
+                }
+                MSR_IA32_TSC_ADJUST => {
+                    val = 0;
+                    // nothing?
+                }
+                MSR_IA32_MTRRCAP
+                | MSR_IA32_MTRR_DEF_TYPE
+                | MSR_IA32_MTRR_PHYSBASE0..=MSR_IA32_MTRR_PHYSMASK9 => {
+                    val = 0;
+                    // nothing?
+                }
+                MSR_IA32_PAT => {
+                    val = rvmcs!(vcpu, GUEST_IA32_PAT);
+                    // nothing?
+                }
 
                 _ => {
                     return Err(ExitHandlerError::MsrIndexNotSupportedRead(msr_index));
@@ -691,19 +792,36 @@ impl ExitHandler for HvVcpu {
                         GUEST_IA32_EFER,
                         (val | (X86_IA32_EFER_LMA | X86_IA32_EFER_LME)) & !(1)
                     );
-                },
+                }
 
                 MSR_IA32_GS_BASE => {
                     wvmcs!(vcpu, GUEST_GS_BASE, val);
-                },
+                }
                 MSR_IA32_BIOS_SIGN_ID => {
-                    // wvmcs!(vcpu, GUEST_GS_BASE, val);
                     // nothing?
-                },
+                }
+                MSR_IA32_XSS => {
+                    self.data.msr_ia32_xss = val;
+                }
 
                 _ => return Err(ExitHandlerError::MsrIndexNotSupportedWrite(msr_index)),
             }
         }
+
+        Ok(())
+    }
+
+    fn handle_xsetbv(&self) -> Result<(), Self::E> {
+        let vcpu = &self.vcpu;
+        let eax = rreg!(vcpu, RAX);
+        let edx = rreg!(vcpu, RDX);
+        let ecx = rreg!(vcpu, RCX) as u32;
+
+        if ecx != 0 {
+            return Err(ExitHandlerError::XSETBVUnsupportedRegister(ecx));
+        }
+
+        wreg!(vcpu, XCR0, (edx << 32) | eax | (1 << 0));
 
         Ok(())
     }

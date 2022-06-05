@@ -15,7 +15,7 @@ pub const CMDLINE_START: u64 = 0x0002_0000;
 /// Default highmem start
 pub const HIGHMEM_START_ADDRESS: u64 = 0x10_0000;
 /// Default kernel command line.
-pub const DEFAULT_KERNEL_CMDLINE: &str = "panic=1 pci=off";
+pub const DEFAULT_KERNEL_CMDLINE: &str = "panic=1 pci=off earlyprintk=serial console=ttyS0";
 
 // x86_64 boot pub constants. See https://www.kernel.org/doc/Documentation/x86/boot.txt for the full
 // documentation.
@@ -27,7 +27,6 @@ pub const KERNEL_HDR_MAGIC: u32 = 0x5372_6448;
 pub const KERNEL_LOADER_OTHER: u8 = 0xff;
 // Header field: `kernel_alignment`. Alignment unit required by a relocatable kernel.
 pub const KERNEL_MIN_ALIGNMENT_BYTES: u32 = 0x0100_0000;
-
 
 // Start address for the EBDA (Extended Bios Data Area).
 // See https://wiki.osdev.org/Memory_Map_(x86) for more information.
@@ -42,7 +41,6 @@ pub const MMIO_GAP_SIZE: u64 = 768 << 20;
 /// The start of the MMIO gap (memory area reserved for MMIO devices).
 pub const MMIO_GAP_START: u64 = MMIO_GAP_END - MMIO_GAP_SIZE;
 
-
 #[derive(Debug)]
 pub enum Error {
     FullE820,
@@ -53,7 +51,6 @@ pub enum Error {
     WriteBootParams(configurator::Error),
     Loader(loader::Error),
 }
-
 
 fn add_e820_entry(
     params: &mut boot_params,
@@ -73,11 +70,12 @@ fn add_e820_entry(
     Ok(())
 }
 
-pub fn load_kernel_elf(guest_memory: &GuestMemoryMmap, path: &str) -> Result<KernelLoaderResult, Error> {
+pub fn load_kernel_elf(
+    guest_memory: &GuestMemoryMmap,
+    path: &str,
+) -> Result<KernelLoaderResult, Error> {
     let mut kernel_image = match File::open(path) {
-        Ok(file) => {
-            file
-        },
+        Ok(file) => file,
         Err(_) => {
             return Err(Error::KernelFileNotFound);
         }
@@ -93,7 +91,8 @@ pub fn load_kernel_elf(guest_memory: &GuestMemoryMmap, path: &str) -> Result<Ker
         None,
         &mut kernel_image,
         Some(highmem_start_address),
-    ).map_err(Error::Loader)?;
+    )
+    .map_err(Error::Loader)?;
 
     let mut params = boot_params::default();
 
@@ -156,13 +155,15 @@ pub fn load_kernel_elf(guest_memory: &GuestMemoryMmap, path: &str) -> Result<Ker
         .write_slice(
             DEFAULT_KERNEL_CMDLINE.as_bytes(),
             GuestAddress(CMDLINE_START),
-        ).map_err(Error::MemoryWrite)?;
+        )
+        .map_err(Error::MemoryWrite)?;
 
     // Write the boot parameters in the zeropage.
     LinuxBootConfigurator::write_bootparams::<GuestMemoryMmap>(
         &BootParams::new::<boot_params>(&params, zero_page_addr),
         guest_memory,
-    ).map_err(Error::WriteBootParams)?; // TODO: error handling
+    )
+    .map_err(Error::WriteBootParams)?; // TODO: error handling
 
     Ok(kernel_load)
 }
