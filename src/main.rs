@@ -7,8 +7,9 @@ const MEM_SIZE: usize = 4 * GIGA_BYTE;
 
 // const KERNEL_PATH: &str = "/Users/ec2-user/repos/vmm/resources/kernel/microvm-kernel-initramfs-hello-x86_64";
 // const KERNEL_PATH: &str = "/Users/ec2-user/repos/vmm/resources/kernel/vmlinux_x86_64_tiny_kernel";
-const KERNEL_PATH: &str =
-    "/Users/ec2-user/repos/vmm/resources/kernel/vmlinux_x86_64_tiny_kernel_halt1_v3";
+// const KERNEL_PATH: &str = "/Users/ec2-user/repos/vmm/resources/kernel/vmlinux_x86_64_tiny_kernel_halt1_v3";
+// const KERNEL_PATH: &str = "/Users/ec2-user/repos/vmm/resources/kernel/vmlinux_x86_64_tiny_kernel_debug";
+const KERNEL_PATH: &str = "/Users/ec2-user/repos/vmm/resources/kernel/vmlinux_from_vmm_reference";
 
 fn main() -> () {
     let mut vmm = vmm::Vmm::init(0, MEM_SIZE).unwrap();

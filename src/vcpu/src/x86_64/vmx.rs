@@ -133,9 +133,11 @@ pub const MSR_IA32_TSC_AUX: u32 = 0xc0000103;
 
 // extra msr
 pub const MSR_IA32_BIOS_SIGN_ID: u32 = 0x0000008b;
+pub const MSR_IA32_APIC_BASE: u32 = 0x0000001b;
+pub const MSR_IA32_TSC_ADJUST: u32 = 0x0000003b;
+pub const MSR_IA32_SPEC_CTRL: u32 = 0x00000048;
 pub const MSR_IA32_ARCH_CAPABILITIES: u32 = 0x0000010a;
 pub const MSR_IA32_MISC_ENABLE: u32 = 0x000001a0;
-pub const MSR_IA32_TSC_ADJUST: u32 = 0x0000003b;
 pub const MSR_IA32_PAT: u32 = 0x00000277;
 pub const MSR_IA32_XSS: u32 = 0x00000da0;
 
@@ -146,6 +148,9 @@ pub const MSR_IA32_MTRR_PHYSBASE0: u32 = 0x00000200;
 // ...
 pub const MSR_IA32_MTRR_PHYSMASK9: u32 = 0x00000213;
 pub const MSR_IA32_MTRR_FIX4K_F8000: u32 = 0x0000026f;
+
+pub const MSR_MISC_FEATURE_ENABLES: u32 = 0x00000140;
+pub const MSR_PLATFORM_INFO: u32 = 0x000000ce;
 
 pub const VCPU_DEADLINE_FOREVER: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
@@ -205,6 +210,14 @@ macro_rules! wvmcs {
 macro_rules! rmsr {
     ($vcpu:expr, $msr_index:expr) => {{
         $vcpu.read_msr($msr_index)?
+    }};
+}
+
+// Write MSR
+#[macro_export]
+macro_rules! wmsr {
+    ($vcpu:expr, $msr_index:expr, $value:expr) => {{
+        $vcpu.write_msr($msr_index, $value)?
     }};
 }
 

@@ -6,7 +6,7 @@ use crate::x86_64::cpuid::*;
 use crate::x86_64::exit_handler::{Error as ExitHandlerError, ExitHandler};
 use crate::x86_64::gdt::{Gdt, SegmentDescriptor};
 use crate::x86_64::vmx::*;
-use crate::{rreg, rvmcs, wreg, wvmcs};
+use crate::{rmsr, rreg, rvmcs, wmsr, wreg, wvmcs};
 
 use hv::{
     x86::{
@@ -108,8 +108,8 @@ impl HvVcpu {
         // See Intel SMD3C 24.6.3 - setting a bit to 1 causes the exception to cauze a VM exit
         // See Intel SDM1 6.5.1 - Table 6-1 for exception details
         // wvmcs!(vcpu, CTRL_EXC_BITMAP, 0xffff_ffff);
-        // wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
-        wvmcs!(vcpu, CTRL_EXC_BITMAP, 1 << 6); // #UD
+        wvmcs!(vcpu, CTRL_EXC_BITMAP, 0x0);
+        // wvmcs!(vcpu, CTRL_EXC_BITMAP, 1 << 6); // #UD
         wvmcs!(vcpu, CTRL_CR0_MASK, 0x60000000);
         wvmcs!(vcpu, CTRL_CR0_SHADOW, 0x0);
         wvmcs!(vcpu, CTRL_CR4_MASK, X86_CR4_VMXE);
@@ -571,7 +571,7 @@ impl ExitHandler for HvVcpu {
 
     fn handle_nmi_interrupt(&self) -> Result<(), Self::E> {
         let vcpu = &self.vcpu;
-        self.dump_vcpu_state().unwrap();
+        // self.dump_vcpu_state().unwrap();
         println!(
             "Got Exeption Exit reason IRQ info [{:#X}][{:#b}]",
             rvmcs!(vcpu, RO_VMEXIT_IRQ_INFO),
@@ -614,7 +614,18 @@ impl ExitHandler for HvVcpu {
             }
             0x1 => {
                 // 2) supported, modified to signal the guest is inside a hypervisor
-                wreg!(vcpu, RCX, rreg!(vcpu, RCX) | CPUID_1_ECX_HYPERVISOR);
+                wreg!(
+                    vcpu,
+                    RCX,
+                    (rreg!(vcpu, RCX) | CPUID_1_ECX_HYPERVISOR) & !CPUID_1_ECX_VMX
+                );
+                wreg!(vcpu, RDX, rreg!(vcpu, RDX) & !CPUID_1_EDX_PAT);
+            }
+            0x2 => {
+                // 1) supported
+            }
+            0x4 => {
+                // 1) supported
             }
             0x6 => {
                 // 2) supported, modified
@@ -626,8 +637,15 @@ impl ExitHandler for HvVcpu {
             0x7 => {
                 // 2) supported, modidfied
                 // disable SGX support
-                wreg!(vcpu, RBX, rreg!(vcpu, RBX) & !CPUID_7_0_EBX_SGX_MASK);
-                wreg!(vcpu, RCX, rreg!(vcpu, RCX) & !CPUID_7_0_ECX_SGX_LC_MASK);
+                wreg!(
+                    vcpu,
+                    RBX,
+                    rreg!(vcpu, RBX) & !(CPUID_7_0_EBX_SGX | CPUID_7_0_EBX_INVPCID)
+                );
+                wreg!(vcpu, RCX, rreg!(vcpu, RCX) & !CPUID_7_0_ECX_SGX_LC);
+            }
+            0xA => {
+                // 1) supported
             }
             0xB => {
                 // 1) supported
@@ -660,6 +678,15 @@ impl ExitHandler for HvVcpu {
                 // 1) supported
             }
             0x80000001 => {
+                // 1) supported
+            }
+            0x80000002 => {
+                // 1) supported
+            }
+            0x80000003 => {
+                // 1) supported
+            }
+            0x80000004 => {
                 // 1) supported
             }
             0x80000007 => {
@@ -727,9 +754,16 @@ impl ExitHandler for HvVcpu {
                 1 => {
                     let data = (eax & 0xFF) as u8;
                     print!("{}", data as char);
+                    if data as char == '\n' {
+                        print!("[VMM]port[{}]> ", _port);
+                    }
                 }
-                _ => {}
+                _ => {
+                    println!("SIZE BIGGER THAN 1");
+                }
             }
+        } else {
+            // println!("WANT INPOUT size[{}] port[{}]\n", size, _port);
         }
         std::io::stdout().flush().unwrap();
 
@@ -756,25 +790,32 @@ impl ExitHandler for HvVcpu {
                 }
                 MSR_IA32_BIOS_SIGN_ID => {
                     val = 0;
-                    // nothing?
                 }
                 MSR_IA32_ARCH_CAPABILITIES => {
                     val = 0;
-                    // nothing?
                 }
                 MSR_IA32_TSC_ADJUST => {
                     val = 0;
-                    // nothing?
                 }
                 MSR_IA32_MTRRCAP
                 | MSR_IA32_MTRR_DEF_TYPE
                 | MSR_IA32_MTRR_PHYSBASE0..=MSR_IA32_MTRR_PHYSMASK9 => {
                     val = 0;
-                    // nothing?
                 }
                 MSR_IA32_PAT => {
                     val = rvmcs!(vcpu, GUEST_IA32_PAT);
-                    // nothing?
+                }
+                MSR_IA32_APIC_BASE => {
+                    val = self.data.msr_ia32_apic_base;
+                }
+                MSR_MISC_FEATURE_ENABLES => {
+                    val = self.data.msr_misc_feature_enable;
+                }
+                MSR_PLATFORM_INFO => {
+                    val = 0;
+                }
+                MSR_IA32_SPEC_CTRL => {
+                    val = self.data.msr_misc_feature_enable;
                 }
 
                 _ => {
@@ -793,7 +834,6 @@ impl ExitHandler for HvVcpu {
                         (val | (X86_IA32_EFER_LMA | X86_IA32_EFER_LME)) & !(1)
                     );
                 }
-
                 MSR_IA32_GS_BASE => {
                     wvmcs!(vcpu, GUEST_GS_BASE, val);
                 }
@@ -802,6 +842,15 @@ impl ExitHandler for HvVcpu {
                 }
                 MSR_IA32_XSS => {
                     self.data.msr_ia32_xss = val;
+                }
+                MSR_IA32_SYSCALL_MASK => {
+                    wmsr!(vcpu, MSR_IA32_SYSCALL_MASK, val);
+                }
+                MSR_MISC_FEATURE_ENABLES => {
+                    self.data.msr_misc_feature_enable = val;
+                }
+                MSR_IA32_SPEC_CTRL => {
+                    self.data.msr_misc_feature_enable = val;
                 }
 
                 _ => return Err(ExitHandlerError::MsrIndexNotSupportedWrite(msr_index)),
