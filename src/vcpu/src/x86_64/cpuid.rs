@@ -26,10 +26,14 @@ pub fn cpuid_count(a: u32, c: u32) -> CpuIdResult {
 
 // some constants
 // See Intel SDM2 Table 3-8
+pub const CPUID_1_ECX_MONITOR: u64 = 1 << 3;
 pub const CPUID_1_ECX_VMX: u64 = 1 << 5;
+pub const CPUID_1_ECX_PDCM: u64 = 1 << 15;
 pub const CPUID_1_ECX_HYPERVISOR: u64 = 1 << 31;
 pub const CPUID_1_EDX_PAT: u64 = 1 << 16;
 pub const CPUID_6_EAX: u64 = 1 << 2;
 pub const CPUID_7_0_EBX_SGX: u64 = 1 << 2;
 pub const CPUID_7_0_EBX_INVPCID: u64 = 1 << 10;
+pub const CPUID_7_0_EBX_PROC_TRACE: u64 = 1 << 25;
 pub const CPUID_7_0_ECX_SGX_LC: u64 = 1 << 30;
+pub const CPUID_A_EAX_PMC_MASK: u64 = 0xff << 8;

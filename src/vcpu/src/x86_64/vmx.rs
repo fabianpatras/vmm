@@ -94,9 +94,13 @@ pub const X86_PDE_PS: u64 = 1 << 7;
 pub const X86_PAE_PDPTE_P: u64 = 1 << 0;
 
 // See Intel SDM3C 24.6.2
+//      Table 24-6
 pub const CTRL_CPU_BASED_HLT: u64 = 1 << 7;
 pub const CTRL_CPU_BASED_CR8_LOAD: u64 = 1 << 19;
 pub const CTRL_CPU_BASED_CR8_STORE: u64 = 1 << 20;
+
+//      Table 24-7
+pub const CTRL_CPU_BASED2_RDTSCP: u64 = 1 << 3;
 
 // See Intel SDM3C 24.8.1
 pub const CTRL_VMENTRY_CONTROLS_IA32_MODE: u64 = 1 << 9;
@@ -132,13 +136,20 @@ pub const MSR_IA32_KERNEL_GS_BASE: u32 = 0xc0000102;
 pub const MSR_IA32_TSC_AUX: u32 = 0xc0000103;
 
 // extra msr
-pub const MSR_IA32_BIOS_SIGN_ID: u32 = 0x0000008b;
 pub const MSR_IA32_APIC_BASE: u32 = 0x0000001b;
+pub const MSR_SMI_COUNT: u32 = 0x00000034;
 pub const MSR_IA32_TSC_ADJUST: u32 = 0x0000003b;
 pub const MSR_IA32_SPEC_CTRL: u32 = 0x00000048;
+pub const MSR_IA32_BIOS_SIGN_ID: u32 = 0x0000008b;
 pub const MSR_IA32_ARCH_CAPABILITIES: u32 = 0x0000010a;
 pub const MSR_IA32_MISC_ENABLE: u32 = 0x000001a0;
+pub const MSR_OFFCORE_RSP_0: u32 = 0x000001a6;
+pub const MSR_OFFCORE_RSP_1: u32 = 0x000001a7;
+pub const MSR_LASTBRANCH_TOS: u32 = 0x000001c9;
 pub const MSR_IA32_PAT: u32 = 0x00000277;
+pub const MSR_PEBS_LD_LAT: u32 = 0x000003f6;
+pub const MSR_PEBS_FRONTEND: u32 = 0x000003f7;
+pub const MSR_PPERF: u32 = 0x0000064e;
 pub const MSR_IA32_XSS: u32 = 0x00000da0;
 
 pub const MSR_IA32_MTRRCAP: u32 = 0x000000fe;

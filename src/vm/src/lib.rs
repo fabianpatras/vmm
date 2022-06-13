@@ -80,6 +80,9 @@ impl HvVm {
         self.vcpus[0]
             .set_regs_for_boot(rip)
             .map_err(Error::SetRip)?;
+
+        self.vcpus[0].dump_vcpu_state().unwrap();
+
         match self.vcpus[0].run().map_err(Error::RunVcpu) {
             Ok(_) => {
                 self.vcpus[0]

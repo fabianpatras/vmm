@@ -89,7 +89,7 @@ impl HvVcpu {
         );
 
         cap = read_capability(ProcBased2)?;
-        wvmcs!(vcpu, CTRL_CPU_BASED2, cap2ctrl(cap, 0));
+        wvmcs!(vcpu, CTRL_CPU_BASED2, cap2ctrl(cap, CTRL_CPU_BASED2_RDTSCP));
 
         cap = read_capability(Entry)?;
         // wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0));
@@ -360,8 +360,8 @@ impl HvVcpu {
                     break;
                 }
                 ER_MOV_CR => {
-                    println!("mov to cr");
-                    println!("exit qual [{:#X}][{:#b}]", exit_qualific, exit_qualific);
+                    // println!("mov to cr");
+                    // println!("exit qual [{:#X}][{:#b}]", exit_qualific, exit_qualific);
                     self.handle_mov_cr().map_err(Error::ExitHandler)?;
                     self.advance_rip()?;
                 }
@@ -392,7 +392,7 @@ impl HvVcpu {
                     );
                 }
                 ER_XSETBV => {
-                    println!("Got \"XSETBV\"");
+                    // println!("Got \"XSETBV\"");
                     self.handle_xsetbv().map_err(Error::ExitHandler)?;
                     self.advance_rip()?;
                 }
@@ -588,17 +588,17 @@ impl ExitHandler for HvVcpu {
 
     fn handle_cpuid(&self) -> Result<(), Self::E> {
         let vcpu = &self.vcpu;
-        let eax = rreg!(vcpu, RAX) as u32;
-        let ecx = rreg!(vcpu, RCX) as u32;
+        let input_eax = rreg!(vcpu, RAX) as u32;
+        let input_ecx = rreg!(vcpu, RCX) as u32;
 
-        println!(
-            "EAX:ECX = [{:#X}:{:#X}]",
-            rreg!(vcpu, RAX),
-            rreg!(vcpu, RCX)
-        );
+        // println!(
+        //     "EAX:ECX = [{:#X}:{:#X}]",
+        //     rreg!(vcpu, RAX),
+        //     rreg!(vcpu, RCX)
+        // );
         // firstly use host inbuild cpuid then decide if we have to mask
         // reject or pass in clear
-        let cpuidres = cpuid_count(eax, ecx);
+        let cpuidres = cpuid_count(input_eax, input_ecx);
 
         wreg!(vcpu, RAX, cpuidres.eax as u64);
         wreg!(vcpu, RBX, cpuidres.ebx as u64);
@@ -608,7 +608,7 @@ impl ExitHandler for HvVcpu {
         // 1) supported and we have to mask something -> early return
         // 2) supported and we pass directly to host inbuild cpuid
         // 3) not supported -> exit with Err
-        match eax {
+        match input_eax {
             0x0 => {
                 // 1) supported
             }
@@ -617,7 +617,8 @@ impl ExitHandler for HvVcpu {
                 wreg!(
                     vcpu,
                     RCX,
-                    (rreg!(vcpu, RCX) | CPUID_1_ECX_HYPERVISOR) & !CPUID_1_ECX_VMX
+                    (rreg!(vcpu, RCX) | CPUID_1_ECX_HYPERVISOR)
+                        & !(CPUID_1_ECX_MONITOR | CPUID_1_ECX_VMX | CPUID_1_ECX_PDCM)
                 );
                 wreg!(vcpu, RDX, rreg!(vcpu, RDX) & !CPUID_1_EDX_PAT);
             }
@@ -625,6 +626,9 @@ impl ExitHandler for HvVcpu {
                 // 1) supported
             }
             0x4 => {
+                // 1) supported
+            }
+            0x5 => {
                 // 1) supported
             }
             0x6 => {
@@ -637,18 +641,37 @@ impl ExitHandler for HvVcpu {
             0x7 => {
                 // 2) supported, modidfied
                 // disable SGX support
-                wreg!(
-                    vcpu,
-                    RBX,
-                    rreg!(vcpu, RBX) & !(CPUID_7_0_EBX_SGX | CPUID_7_0_EBX_INVPCID)
-                );
-                wreg!(vcpu, RCX, rreg!(vcpu, RCX) & !CPUID_7_0_ECX_SGX_LC);
+
+                match input_ecx {
+                    0x0 => {
+                        wreg!(
+                            vcpu,
+                            RBX,
+                            rreg!(vcpu, RBX)
+                                & !(CPUID_7_0_EBX_SGX
+                                    | CPUID_7_0_EBX_INVPCID
+                                    | CPUID_7_0_EBX_PROC_TRACE)
+                        );
+                        wreg!(vcpu, RCX, rreg!(vcpu, RCX) & !CPUID_7_0_ECX_SGX_LC);
+                    }
+                    _ => {}
+                }
             }
             0xA => {
-                // 1) supported
+                // 2) supported, modified to modify Number of general-purpose performance
+                // monitoring counter per logical processor to 0
+                wreg!(vcpu, RAX, rreg!(vcpu, RAX) & !CPUID_A_EAX_PMC_MASK);
             }
             0xB => {
                 // 1) supported
+                // println!("\n\n\t-> aici topology [{}][{}]", input_eax, input_ecx);
+
+                // we're using a single die with a single cpu with a single thread topology
+                // match input_ecx {
+                //     0x0 => {
+
+                //     }
+                // }
             }
             0xD => {
                 // 1) supported
@@ -697,7 +720,9 @@ impl ExitHandler for HvVcpu {
             }
 
             _ => {
-                return Err(ExitHandlerError::CpuIdLeafNotSupported(eax, ecx));
+                return Err(ExitHandlerError::CpuIdLeafNotSupported(
+                    input_eax, input_ecx,
+                ));
             }
         }
 
@@ -755,7 +780,7 @@ impl ExitHandler for HvVcpu {
                     let data = (eax & 0xFF) as u8;
                     print!("{}", data as char);
                     if data as char == '\n' {
-                        print!("[VMM]port[{}]> ", _port);
+                        // print!("[VMM]port[{}]> ", _port);
                     }
                 }
                 _ => {
@@ -765,7 +790,7 @@ impl ExitHandler for HvVcpu {
         } else {
             // println!("WANT INPOUT size[{}] port[{}]\n", size, _port);
         }
-        std::io::stdout().flush().unwrap();
+        // std::io::stdout().flush().unwrap();
 
         Ok(())
     }
@@ -775,10 +800,10 @@ impl ExitHandler for HvVcpu {
         let msr_index = rreg!(vcpu, RCX) as u32;
         let mut val: u64 = (rreg!(vcpu, RDX) << 32) | (rreg!(vcpu, RAX) & 0xFFFF_FFFF);
 
-        println!(
-            "MSR Access Read[{}] index[{:#X}] [{:#X}]",
-            read, msr_index, val
-        );
+        // println!(
+        //     "MSR Access Read[{}] index[{:#X}] [{:#X}]",
+        //     read, msr_index, val
+        // );
 
         if read {
             match msr_index {
@@ -817,6 +842,27 @@ impl ExitHandler for HvVcpu {
                 MSR_IA32_SPEC_CTRL => {
                     val = self.data.msr_misc_feature_enable;
                 }
+                MSR_LASTBRANCH_TOS => {
+                    val = 0;
+                }
+                MSR_OFFCORE_RSP_0 => {
+                    val = 0;
+                }
+                MSR_OFFCORE_RSP_1 => {
+                    val = 0;
+                }
+                MSR_PEBS_LD_LAT => {
+                    val = 0;
+                }
+                MSR_PEBS_FRONTEND => {
+                    val = 0;
+                }
+                MSR_PPERF => {
+                    val = 0;
+                }
+                MSR_SMI_COUNT => {
+                    val = 0;
+                }
 
                 _ => {
                     return Err(ExitHandlerError::MsrIndexNotSupportedRead(msr_index));
@@ -851,6 +897,26 @@ impl ExitHandler for HvVcpu {
                 }
                 MSR_IA32_SPEC_CTRL => {
                     self.data.msr_misc_feature_enable = val;
+                }
+                MSR_LASTBRANCH_TOS => {
+                    // val = 0;
+                    // the kernel will see we don't support this ()
+                }
+                MSR_OFFCORE_RSP_0 => {
+                    // val = 0;
+                    // the kernel will see we don't support this
+                }
+                MSR_OFFCORE_RSP_1 => {
+                    // val = 0;
+                    // the kernel will see we don't support this
+                }
+                MSR_PEBS_LD_LAT => {
+                    // val = 0;
+                    // the kernel will see we don't support this
+                }
+                MSR_PEBS_FRONTEND => {
+                    // val = 0;
+                    // the kernel will see we don't support this
                 }
 
                 _ => return Err(ExitHandlerError::MsrIndexNotSupportedWrite(msr_index)),
