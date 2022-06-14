@@ -19,9 +19,19 @@ use hv::{
 use std::mem;
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemory};
 
+#[derive(Default, Debug)]
+struct ExitCount {
+    io_exit_read: u64,
+    io_exit_write: u64,
+    cpuid: u64,
+    msr_read: u64,
+    msr_write: u64,
+}
+
 pub struct HvVcpu {
     vcpu: Vcpu,
     data: CpuData,
+    exit_count: ExitCount,
 }
 
 #[derive(Debug)]
@@ -53,6 +63,7 @@ impl HvVcpu {
         let hv_vcpu = HvVcpu {
             vcpu,
             data: Default::default(),
+            exit_count: Default::default(),
         };
 
         hv_vcpu.set_up_protected_mode(guest_memory)?;
@@ -89,7 +100,11 @@ impl HvVcpu {
         );
 
         cap = read_capability(ProcBased2)?;
-        wvmcs!(vcpu, CTRL_CPU_BASED2, cap2ctrl(cap, CTRL_CPU_BASED2_RDTSCP));
+        wvmcs!(
+            vcpu,
+            CTRL_CPU_BASED2,
+            cap2ctrl(cap, CTRL_CPU_BASED2_RDTSCP | CTRL_CPU_BASED2_XSAVES)
+        );
 
         cap = read_capability(Entry)?;
         // wvmcs!(vcpu, CTRL_VMENTRY_CONTROLS, cap2ctrl(cap, 0));
@@ -408,7 +423,7 @@ impl HvVcpu {
         }
 
         println!("Exited after [{}] VM Exits!", exits);
-
+        println!("Exit counts [{:?}]", self.exit_count);
         Ok(())
     }
 
@@ -586,10 +601,13 @@ impl ExitHandler for HvVcpu {
         Ok(())
     }
 
-    fn handle_cpuid(&self) -> Result<(), Self::E> {
+    fn handle_cpuid(&mut self) -> Result<(), Self::E> {
         let vcpu = &self.vcpu;
         let input_eax = rreg!(vcpu, RAX) as u32;
         let input_ecx = rreg!(vcpu, RCX) as u32;
+
+        // counting this cpuid instruction
+        self.exit_count.cpuid += 1;
 
         // println!(
         //     "EAX:ECX = [{:#X}:{:#X}]",
@@ -618,9 +636,18 @@ impl ExitHandler for HvVcpu {
                     vcpu,
                     RCX,
                     (rreg!(vcpu, RCX) | CPUID_1_ECX_HYPERVISOR)
-                        & !(CPUID_1_ECX_MONITOR | CPUID_1_ECX_VMX | CPUID_1_ECX_PDCM)
+                        & !(CPUID_1_ECX_MONITOR
+                            | CPUID_1_ECX_VMX
+                            | CPUID_1_ECX_PDCM
+                            | CPUID_1_ECX_XSAVE)
                 );
-                wreg!(vcpu, RDX, rreg!(vcpu, RDX) & !CPUID_1_EDX_PAT);
+                wreg!(
+                    vcpu,
+                    RDX,
+                    rreg!(vcpu, RDX) & !(CPUID_1_EDX_PAT | CPUID_1_EDX_FXSR)
+                );
+
+                // println!("\n\n\t>Read this CPUID!\n\n\n EDX[{:#X}]", rreg!(vcpu, RDX));
             }
             0x2 => {
                 // 1) supported
@@ -664,7 +691,6 @@ impl ExitHandler for HvVcpu {
             }
             0xB => {
                 // 1) supported
-                // println!("\n\n\t-> aici topology [{}][{}]", input_eax, input_ecx);
 
                 // we're using a single die with a single cpu with a single thread topology
                 // match input_ecx {
@@ -755,7 +781,7 @@ impl ExitHandler for HvVcpu {
         Ok(())
     }
 
-    fn handle_io(&self) -> Result<(), Self::E> {
+    fn handle_io(&mut self) -> Result<(), Self::E> {
         let vcpu = &self.vcpu;
         let exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC) as u32;
         let size: u32 = (exit_qualific & 0x7) + 1;
@@ -775,12 +801,13 @@ impl ExitHandler for HvVcpu {
         //     eax,
         // );
         if direction == 0 {
+            self.exit_count.io_exit_write += 1;
             match size {
                 1 => {
                     let data = (eax & 0xFF) as u8;
                     print!("{}", data as char);
                     if data as char == '\n' {
-                        // print!("[VMM]port[{}]> ", _port);
+                        print!("[VMM]port[{}]> ", _port);
                     }
                 }
                 _ => {
@@ -788,7 +815,17 @@ impl ExitHandler for HvVcpu {
                 }
             }
         } else {
+            self.exit_count.io_exit_read += 1;
+            match _port {
+                // See https://wiki.osdev.org/Serial_Ports
+                // Line Status Register.
+                0x3fd => {
+                    // wreg!(vcpu, RAX, 0x0);
+                }
+                _ => {}
+            }
             // println!("WANT INPOUT size[{}] port[{}]\n", size, _port);
+            // print!(".");
         }
         // std::io::stdout().flush().unwrap();
 
@@ -799,6 +836,12 @@ impl ExitHandler for HvVcpu {
         let vcpu = &self.vcpu;
         let msr_index = rreg!(vcpu, RCX) as u32;
         let mut val: u64 = (rreg!(vcpu, RDX) << 32) | (rreg!(vcpu, RAX) & 0xFFFF_FFFF);
+
+        if read {
+            self.exit_count.msr_read += 1;
+        } else {
+            self.exit_count.msr_write += 1;
+        }
 
         // println!(
         //     "MSR Access Read[{}] index[{:#X}] [{:#X}]",

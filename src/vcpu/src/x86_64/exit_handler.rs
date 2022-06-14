@@ -27,10 +27,10 @@ pub trait ExitHandler {
     type E;
 
     fn handle_nmi_interrupt(&self) -> Result<(), Self::E>;
-    fn handle_cpuid(&self) -> Result<(), Self::E>;
+    fn handle_cpuid(&mut self) -> Result<(), Self::E>;
     fn handle_hlt(&self) -> Result<(), Self::E>;
     fn handle_mov_cr(&self) -> Result<(), Self::E>;
-    fn handle_io(&self) -> Result<(), Self::E>;
+    fn handle_io(&mut self) -> Result<(), Self::E>;
     fn handle_msr_access(&mut self, read: bool) -> Result<(), Self::E>;
     fn handle_xsetbv(&self) -> Result<(), Self::E>;
 }

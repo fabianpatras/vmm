@@ -101,6 +101,7 @@ pub const CTRL_CPU_BASED_CR8_STORE: u64 = 1 << 20;
 
 //      Table 24-7
 pub const CTRL_CPU_BASED2_RDTSCP: u64 = 1 << 3;
+pub const CTRL_CPU_BASED2_XSAVES: u64 = 1 << 20;
 
 // See Intel SDM3C 24.8.1
 pub const CTRL_VMENTRY_CONTROLS_IA32_MODE: u64 = 1 << 9;
