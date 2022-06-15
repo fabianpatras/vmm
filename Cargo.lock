@@ -105,6 +105,7 @@ dependencies = [
 name = "devices"
 version = "0.1.0"
 dependencies = [
+ "kqueue",
  "vm-device",
  "vm-superio",
 ]
@@ -120,6 +121,15 @@ dependencies = [
  "log",
  "regex",
  "termcolor",
+]
+
+[[package]]
+name = "event_manager"
+version = "0.1.0"
+dependencies = [
+ "kqueue",
+ "vm-device",
+ "vm-superio",
 ]
 
 [[package]]
@@ -172,6 +182,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5333a4c9076c1ae479461cb9fab7d4fb6f250119b32762879b44aff8f918e06"
 dependencies = [
  "bindgen",
+]
+
+[[package]]
+name = "kqueue"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d6112e8f37b59803ac47a42d14f1f3a59bbf72fc6857ffc5be455e28a691f8e"
+dependencies = [
+ "kqueue-sys",
+ "libc",
+]
+
+[[package]]
+name = "kqueue-sys"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8367585489f01bc55dd27404dcf56b95e6da061a256a666ab23be9ba96a2e587"
+dependencies = [
+ "bitflags",
+ "libc",
 ]
 
 [[package]]
@@ -383,13 +413,26 @@ name = "vmm"
 version = "0.1.0"
 dependencies = [
  "devices",
+ "event_manager",
  "hv",
+ "kqueue",
  "linux-loader",
  "vcpu",
  "vm",
  "vm-device",
  "vm-memory",
  "vm-superio",
+ "vmm-sys-util",
+]
+
+[[package]]
+name = "vmm-sys-util"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "733537bded03aaa93543f785ae997727b30d1d9f4a03b7861d23290474242e11"
+dependencies = [
+ "bitflags",
+ "libc",
 ]
 
 [[package]]

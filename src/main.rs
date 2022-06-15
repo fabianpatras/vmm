@@ -1,5 +1,4 @@
 extern crate vmm;
-use devices::serial::ceva;
 
 const KILO_BYTE: usize = 1024;
 const MEGA_BYTE: usize = 1024 * KILO_BYTE;

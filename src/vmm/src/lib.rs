@@ -2,7 +2,7 @@ mod bootloader;
 
 use crate::bootloader::load_kernel_elf;
 
-use devices::serial::{DummyTrigger, SerialWrapper};
+use devices::serial::{KqEventTrigger, SerialWrapper};
 use vm::HvVm;
 
 use vm_device::{
@@ -13,7 +13,15 @@ use vm_device::{
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 use vm_superio::{serial::NoEvents, Serial, Trigger};
 
+use vmm_sys_util::terminal::Terminal;
+
+use kqueue::Event;
+use kqueue::Watcher;
+use kqueue::Ident::Fd;
+
 use std::io;
+use std::io::stdin;
+use std::os::unix::prelude::RawFd;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -21,6 +29,7 @@ pub struct Vmm {
     pub vm: HvVm,
     pub guest_memory: GuestMemoryMmap,
     pub device_manager: Arc<Mutex<IoManager>>,
+    pub watcher: Arc<Mutex<Watcher>>,
 }
 
 #[derive(Debug)]
@@ -33,6 +42,8 @@ pub enum Error {
     Bootloader(bootloader::Error),
 
     SerialDevice,
+
+    Kqueue(io::Error),
 }
 
 impl Vmm {
@@ -51,11 +62,15 @@ impl Vmm {
         vm.create_cpu(&guest_memory, device_manager.clone())
             .map_err(Error::Vm)?;
 
+        let watcher = Arc::new(Mutex::new(Watcher::new().map_err(Error::Kqueue)?));
+
         let vmm = Vmm {
             vm,
             guest_memory,
             device_manager,
+            watcher,
         };
+
         vmm.add_serial_console();
 
         Ok(vmm)
@@ -65,15 +80,45 @@ impl Vmm {
         let kernel_result =
             load_kernel_elf(&self.guest_memory, kernel_path).map_err(Error::Bootloader)?;
 
+        // if stdin().lock().set_raw_mode().is_err() {
+        //     eprintln!("Failed to set raw mode on terminal. Stdin will echo.");
+        // }
+
+        // this should spawn a thread (vcpu)
         self.vm
             .run(kernel_result.kernel_load.0, &self.guest_memory)
             .map_err(Error::Vm)?;
+
+        
+        loop {
+            match self.watcher.lock().unwrap().poll_forever(None) {
+                None => {
+                    println!("ce??");break;
+                }
+                Some(e) => {
+                    match e.ident {
+                        Fd(fd) => {
+
+                        }
+                        _ => {
+                            println!("I should not see this?");
+                        }
+                    }
+                    println!("Got event [{:?}]", e.ident);
+                }
+            }
+        }
+
 
         Ok(())
     }
 
     fn add_serial_console(&self) {
-        let dummy_trigger = DummyTrigger {};
+        let terminal_fd = stdin().lock().tty_fd() as RawFd;
+
+        self.watcher.lock().unwrap().add_fd(terminal_fd, kqueue::EventFilter::EVFILT_READ, kqueue::FilterFlag::NOTE_FFNOP).unwrap();
+
+        let dummy_trigger = KqEventTrigger(0);
         let serial_device = Arc::new(Mutex::new(SerialWrapper(Serial::new(
             dummy_trigger,
             io::stdout(),

@@ -5,28 +5,30 @@ use vm_device::{
 };
 use vm_superio::{serial::NoEvents, Serial, Trigger};
 
+use kqueue::Event as KqEvent;
+
 use std::io;
 use std::io::stdin;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-pub struct DummyTrigger {}
+pub struct KqEventTrigger(pub u64);
 
 #[derive(Debug)]
 pub enum Error {
     // NoError,
 }
 
-impl DummyTrigger {
+impl KqEventTrigger {
     pub fn write(&self, _data: u64) -> () {
         // println!("Scriu [{}]", data);
     }
 }
 
-pub struct SerialWrapper(pub Serial<DummyTrigger, NoEvents, io::Stdout>);
+pub struct SerialWrapper(pub Serial<KqEventTrigger, NoEvents, io::Stdout>);
 
-impl Trigger for DummyTrigger {
+impl Trigger for KqEventTrigger {
     type E = Error;
 
     fn trigger(&self) -> Result<(), Self::E> {
@@ -62,7 +64,6 @@ impl MutDevicePio for SerialWrapper {
             }
         }
 
-
         data[0] = self.0.read((offset & 0xFF) as u8);
         println!("citim [{:#x}] de pe offset [{}]", data[0], offset);
     }
@@ -83,17 +84,18 @@ impl MutDevicePio for SerialWrapper {
     }
 }
 
-pub fn ceva() -> () {
-    let my_trigger = DummyTrigger {};
-    let my_serial = Arc::new(Mutex::new(SerialWrapper(Serial::new(
-        my_trigger,
-        io::stdout(),
-    ))));
+// pub fn ceva() -> () {
 
-    let mut manager = IoManager::new();
-    let bus_range = PioRange::new(PioAddress(0), 10).unwrap();
-    manager.register_pio(bus_range, my_serial.clone()).unwrap();
-    manager
-        .pio_write(PioAddress(0), &vec![b'o', b'k', b'o', b'k', b'o', b'k'])
-        .unwrap();
-}
+//     let my_trigger = KqEventTrigger {};
+//     let my_serial = Arc::new(Mutex::new(SerialWrapper(Serial::new(
+//         my_trigger,
+//         io::stdout(),
+//     ))));
+
+//     let mut manager = IoManager::new();
+//     let bus_range = PioRange::new(PioAddress(0), 10).unwrap();
+//     manager.register_pio(bus_range, my_serial.clone()).unwrap();
+//     manager
+//         .pio_write(PioAddress(0), &vec![b'o', b'k', b'o', b'k', b'o', b'k'])
+//         .unwrap();
+// }
