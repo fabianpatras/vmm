@@ -102,6 +102,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "devices"
+version = "0.1.0"
+dependencies = [
+ "vm-device",
+ "vm-superio",
+]
+
+[[package]]
 name = "env_logger"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -118,6 +126,7 @@ dependencies = [
 name = "f_vmm"
 version = "0.1.0"
 dependencies = [
+ "devices",
  "hv",
  "libc",
  "linux-loader",
@@ -321,6 +330,7 @@ name = "vcpu"
 version = "0.1.0"
 dependencies = [
  "hv",
+ "vm-device",
  "vm-memory",
 ]
 
@@ -342,8 +352,15 @@ version = "0.1.0"
 dependencies = [
  "hv",
  "vcpu",
+ "vm-device",
  "vm-memory",
 ]
+
+[[package]]
+name = "vm-device"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "599adbdaddea4947ca23c085d2b8e47f3499ccda35438424526f3853748a8eb6"
 
 [[package]]
 name = "vm-memory"
@@ -356,14 +373,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vm-superio"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8e601bb155dd21bdcc371b9d84974e1bafbc7a355e149279280eb9c2ac58d1"
+
+[[package]]
 name = "vmm"
 version = "0.1.0"
 dependencies = [
+ "devices",
  "hv",
  "linux-loader",
  "vcpu",
  "vm",
+ "vm-device",
  "vm-memory",
+ "vm-superio",
 ]
 
 [[package]]

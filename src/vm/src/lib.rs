@@ -1,7 +1,12 @@
 use hv::{x86::VmOptions, Memory, Vm};
+
 use std::sync::Arc;
-use vcpu::x86_64::vcpu::{Error as HvVcpuError, HvVcpu};
+use std::sync::Mutex;
+
+use vm_device::device_manager::IoManager;
 use vm_memory::{GuestMemory, GuestMemoryMmap};
+
+use vcpu::x86_64::vcpu::{Error as HvVcpuError, HvVcpu};
 
 pub struct HvVm {
     pub hv_vm: Arc<Vm>,
@@ -64,9 +69,13 @@ impl HvVm {
         Ok(())
     }
 
-    pub fn create_cpu<M: GuestMemory>(&mut self, guest_memory: &M) -> Result<(), Error> {
-        let vcpu =
-            HvVcpu::new(Arc::clone(&self.hv_vm), guest_memory).map_err(Error::CreateHvVcpu)?;
+    pub fn create_cpu<M: GuestMemory>(
+        &mut self,
+        guest_memory: &M,
+        device_manager: Arc<Mutex<IoManager>>,
+    ) -> Result<(), Error> {
+        let vcpu = HvVcpu::new(Arc::clone(&self.hv_vm), guest_memory, device_manager)
+            .map_err(Error::CreateHvVcpu)?;
 
         self.vcpus.push(vcpu);
 

@@ -8,8 +8,10 @@ edition = "2021"
 [dependencies]
 hv = "0.1.2"
 vm-memory = { version = ">=0.8.0", features = ["backend-mmap"] }
+vm-device = "0.1.0"
+vm-superio = "0.6.0"
 linux-loader = { version = "0.4.0" }
 
 vcpu = { path = "../vcpu" }
 vm = { path = "../vm" }
-
+devices = { path = "../devices" }

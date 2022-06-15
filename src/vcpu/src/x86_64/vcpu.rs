@@ -1,5 +1,5 @@
-use std::io::Write;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use crate::x86_64::cpu_data::CpuData;
 use crate::x86_64::cpuid::*;
@@ -17,6 +17,10 @@ use hv::{
     Vcpu,
 };
 use std::mem;
+use vm_device::{
+    bus::PioAddress,
+    device_manager::{IoManager, PioManager},
+};
 use vm_memory::{Address, Bytes, GuestAddress, GuestMemory};
 
 #[derive(Default, Debug)]
@@ -32,6 +36,7 @@ pub struct HvVcpu {
     vcpu: Vcpu,
     data: CpuData,
     exit_count: ExitCount,
+    device_manager: Arc<Mutex<IoManager>>,
 }
 
 #[derive(Debug)]
@@ -58,12 +63,17 @@ impl From<hv::Error> for Error {
 }
 
 impl HvVcpu {
-    pub fn new<M: GuestMemory>(vm: Arc<hv::Vm>, guest_memory: &M) -> Result<HvVcpu, Error> {
+    pub fn new<M: GuestMemory>(
+        vm: Arc<hv::Vm>,
+        guest_memory: &M,
+        device_manager: Arc<Mutex<IoManager>>,
+    ) -> Result<HvVcpu, Error> {
         let vcpu = vm.create_cpu().map_err(Error::HvCreateVcpu)?;
         let hv_vcpu = HvVcpu {
             vcpu,
             data: Default::default(),
             exit_count: Default::default(),
+            device_manager: device_manager.clone(),
         };
 
         hv_vcpu.set_up_protected_mode(guest_memory)?;
@@ -785,12 +795,51 @@ impl ExitHandler for HvVcpu {
         let vcpu = &self.vcpu;
         let exit_qualific = rvmcs!(vcpu, RO_EXIT_QUALIFIC) as u32;
         let size: u32 = (exit_qualific & 0x7) + 1;
-        let direction: u32 = (exit_qualific >> 3) & 0x1;
+        let read: bool = (exit_qualific >> 3) & 0x1 == 0x1;
         let _string = (exit_qualific >> 4) & 0x1;
         let _rep = (exit_qualific >> 5) & 0x1;
         let _operand = (exit_qualific >> 6) & 0x1;
-        let _port = (exit_qualific >> 16) & 0xFFFF;
+        let _port = ((exit_qualific >> 16) & 0xFFFF) as u16;
         let eax = rreg!(vcpu, RAX);
+
+        let data: &mut [u8; 1] = &mut [0u8; 1];
+        match size {
+            1 => {
+                data[0] = (eax & 0xFF) as u8;
+            }
+            // 2 => {
+            //     // i don't know if the order is ok
+            //     data[0] = (eax & 0xFF) as u8;
+            //     data[1] = ((eax >> 8) & 0xFF) as u8;
+            // }
+            // 4 => {
+            //     data[0] = (eax & 0xFF) as u8;
+            //     data[1] = ((eax >> 8) & 0xFF) as u8;
+            //     data[2] = ((eax >> 16) & 0xFF) as u8;
+            //     data[3] = ((eax >> 24) & 0xFF) as u8;
+            // }
+            _ => {}
+        }
+
+        if (0x3f8..(0x3f8 + 8)).contains(&_port) {
+            // println!(":( port=[{}]", _port);
+            // print!("port=[{}] size[{}] ", _port, size);
+            if read {
+                self.device_manager
+                    .lock()
+                    .unwrap()
+                    .pio_write(PioAddress(_port), data)
+                    .unwrap();
+            } else {
+                self.device_manager
+                    .lock()
+                    .unwrap()
+                    .pio_read(PioAddress(_port), data)
+                    .unwrap();
+
+                wreg!(vcpu, RAX, data[0] as u64);
+            }
+        }
 
         // println!(
         //     "Attepting to [{}] [{}] bytes {} port [{}] = eax [{}]",
@@ -800,33 +849,33 @@ impl ExitHandler for HvVcpu {
         //     _port,
         //     eax,
         // );
-        if direction == 0 {
-            self.exit_count.io_exit_write += 1;
-            match size {
-                1 => {
-                    let data = (eax & 0xFF) as u8;
-                    print!("{}", data as char);
-                    if data as char == '\n' {
-                        print!("[VMM]port[{}]> ", _port);
-                    }
-                }
-                _ => {
-                    println!("SIZE BIGGER THAN 1");
-                }
-            }
-        } else {
-            self.exit_count.io_exit_read += 1;
-            match _port {
-                // See https://wiki.osdev.org/Serial_Ports
-                // Line Status Register.
-                0x3fd => {
-                    // wreg!(vcpu, RAX, 0x0);
-                }
-                _ => {}
-            }
-            // println!("WANT INPOUT size[{}] port[{}]\n", size, _port);
-            // print!(".");
-        }
+        // if read {
+        //     self.exit_count.io_exit_write += 1;
+        //     match size {
+        //         1 => {
+        //             let data = (eax & 0xFF) as u8;
+        //             print!("{}", data as char);
+        //             if data as char == '\n' {
+        //                 print!("[VMM]port[{}]> ", _port);
+        //             }
+        //         }
+        //         _ => {
+        //             println!("SIZE BIGGER THAN 1");
+        //         }
+        //     }
+        // } else {
+        //     self.exit_count.io_exit_read += 1;
+        //     match _port {
+        //         // See https://wiki.osdev.org/Serial_Ports
+        //         // Line Status Register.
+        //         0x3fd => {
+        //             // wreg!(vcpu, RAX, 0x0);
+        //         }
+        //         _ => {}
+        //     }
+        //     // println!("WANT INPOUT size[{}] port[{}]\n", size, _port);
+        //     // print!(".");
+        // }
         // std::io::stdout().flush().unwrap();
 
         Ok(())

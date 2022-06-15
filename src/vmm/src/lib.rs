@@ -1,10 +1,26 @@
-use vm::HvVm;
-use vm_memory::{GuestAddress, GuestMemoryMmap};
 mod bootloader;
+
 use crate::bootloader::load_kernel_elf;
+
+use devices::serial::{DummyTrigger, SerialWrapper};
+use vm::HvVm;
+
+use vm_device::{
+    bus::{PioAddress, PioRange},
+    device_manager::{IoManager, PioManager},
+    MutDevicePio,
+};
+use vm_memory::{GuestAddress, GuestMemoryMmap};
+use vm_superio::{serial::NoEvents, Serial, Trigger};
+
+use std::io;
+use std::sync::Arc;
+use std::sync::Mutex;
+
 pub struct Vmm {
     pub vm: HvVm,
     pub guest_memory: GuestMemoryMmap,
+    pub device_manager: Arc<Mutex<IoManager>>,
 }
 
 #[derive(Debug)]
@@ -15,6 +31,8 @@ pub enum Error {
     Memory(vm_memory::Error),
 
     Bootloader(bootloader::Error),
+
+    SerialDevice,
 }
 
 impl Vmm {
@@ -25,13 +43,22 @@ impl Vmm {
             mem_size as usize,
         )])
         .map_err(Error::Memory)?;
+        let device_manager = Arc::new(Mutex::new(IoManager::new()));
 
         vm.map_memory(&guest_memory, mem_start_address, mem_size)
             .map_err(Error::Vm)?;
 
-        vm.create_cpu(&guest_memory).map_err(Error::Vm)?;
+        vm.create_cpu(&guest_memory, device_manager.clone())
+            .map_err(Error::Vm)?;
 
-        Ok(Vmm { vm, guest_memory })
+        let vmm = Vmm {
+            vm,
+            guest_memory,
+            device_manager,
+        };
+        vmm.add_serial_console();
+
+        Ok(vmm)
     }
 
     pub fn run(&mut self, kernel_path: &str) -> Result<(), Error> {
@@ -43,6 +70,23 @@ impl Vmm {
             .map_err(Error::Vm)?;
 
         Ok(())
+    }
+
+    fn add_serial_console(&self) {
+        let dummy_trigger = DummyTrigger {};
+        let serial_device = Arc::new(Mutex::new(SerialWrapper(Serial::new(
+            dummy_trigger,
+            io::stdout(),
+        ))));
+
+        // See https://wiki.osdev.org/Serial_Ports
+        // We're setting up COM1 (ttyS0)
+        let bus_range = PioRange::new(PioAddress(0x3F8), 0x8).unwrap();
+        self.device_manager
+            .lock()
+            .unwrap()
+            .register_pio(bus_range, serial_device)
+            .unwrap();
     }
 }
 
