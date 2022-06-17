@@ -115,17 +115,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "f_vmm"
-version = "0.1.0"
-dependencies = [
- "hv",
- "libc",
- "linux-loader",
- "vm-memory",
- "vmm",
-]
-
-[[package]]
 name = "glob"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -209,6 +198,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6389c490849ff5bc16be905ae24bc913a9c8892e19b2341dbc175e14c341c2b8"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "macos_vmm"
+version = "0.1.0"
+dependencies = [
+ "hv",
+ "libc",
+ "linux-loader",
+ "vm-memory",
+ "vmm",
 ]
 
 [[package]]

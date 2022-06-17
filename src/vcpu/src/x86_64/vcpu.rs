@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::sync::Arc;
 
 use crate::x86_64::cpu_data::CpuData;
@@ -6,7 +5,7 @@ use crate::x86_64::cpuid::*;
 use crate::x86_64::exit_handler::{Error as ExitHandlerError, ExitHandler};
 use crate::x86_64::gdt::{Gdt, SegmentDescriptor};
 use crate::x86_64::vmx::*;
-use crate::{rmsr, rreg, rvmcs, wmsr, wreg, wvmcs};
+use crate::{rreg, rvmcs, wmsr, wreg, wvmcs};
 
 use hv::{
     x86::{
