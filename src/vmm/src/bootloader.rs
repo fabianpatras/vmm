@@ -16,7 +16,7 @@ pub const CMDLINE_START: u64 = 0x0002_0000;
 pub const HIGHMEM_START_ADDRESS: u64 = 0x10_0000;
 /// Default kernel command line.
 pub const DEFAULT_KERNEL_CMDLINE: &str =
-    "panic=1 pci=off earlyprintk=serial console=ttyS0 io_delay=none maxcpus=0";
+    "panic=1 pci=off earlyprintk=serial,keep io_delay=none maxcpus=0";
 
 // x86_64 boot pub constants. See https://www.kernel.org/doc/Documentation/x86/boot.txt for the full
 // documentation.
