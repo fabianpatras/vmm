@@ -225,6 +225,7 @@ impl HvVcpu {
 
         let mut efer = rvmcs!(vcpu, GUEST_IA32_EFER);
         efer |= X86_IA32_EFER_LME;
+        // efer |= X86_IA32_EFER_SCE;
         // efer |= X86_IA32_EFER_LMA;
         wvmcs!(vcpu, GUEST_IA32_EFER, efer);
 
@@ -638,7 +639,8 @@ impl ExitHandler for HvVcpu {
                         & !(CPUID_1_ECX_MONITOR
                             | CPUID_1_ECX_VMX
                             | CPUID_1_ECX_PDCM
-                            | CPUID_1_ECX_XSAVE)
+                            | CPUID_1_ECX_XSAVE
+                            | CPUID_1_ECX_OSXSAVE)
                 );
                 wreg!(
                     vcpu,
@@ -727,6 +729,7 @@ impl ExitHandler for HvVcpu {
             }
             0x80000001 => {
                 // 1) supported
+                wreg!(vcpu, RDX, rreg!(vcpu, RDX) & !(CPUID_80000001_EDX_SYSCALL));
             }
             0x80000002 => {
                 // 1) supported
@@ -806,7 +809,7 @@ impl ExitHandler for HvVcpu {
                     let data = (eax & 0xFF) as u8;
                     print!("{}", data as char);
                     if data as char == '\n' {
-                        print!("[VMM]port[{}]> ", _port);
+                        // print!("[VMM]port[{}]> ", _port);
                     }
                 }
                 _ => {
@@ -864,6 +867,9 @@ impl ExitHandler for HvVcpu {
                 MSR_IA32_TSC_ADJUST => {
                     val = 0;
                 }
+                MSR_IA32_TSC_DEADLINE => {
+                    val = 0;
+                }
                 MSR_IA32_MTRRCAP
                 | MSR_IA32_MTRR_DEF_TYPE
                 | MSR_IA32_MTRR_PHYSBASE0..=MSR_IA32_MTRR_PHYSMASK9 => {
@@ -882,7 +888,7 @@ impl ExitHandler for HvVcpu {
                     val = 0;
                 }
                 MSR_IA32_SPEC_CTRL => {
-                    val = self.data.msr_misc_feature_enable;
+                    val = self.data.msr_ia32_spec_ctrl;
                 }
                 MSR_LASTBRANCH_TOS => {
                     val = 0;
@@ -938,7 +944,7 @@ impl ExitHandler for HvVcpu {
                     self.data.msr_misc_feature_enable = val;
                 }
                 MSR_IA32_SPEC_CTRL => {
-                    self.data.msr_misc_feature_enable = val;
+                    self.data.msr_ia32_spec_ctrl = val;
                 }
                 MSR_LASTBRANCH_TOS => {
                     // val = 0;
@@ -959,6 +965,9 @@ impl ExitHandler for HvVcpu {
                 MSR_PEBS_FRONTEND => {
                     // val = 0;
                     // the kernel will see we don't support this
+                }
+                MSR_IA32_TSC_DEADLINE => {
+                    // val = 0;
                 }
 
                 _ => return Err(ExitHandlerError::MsrIndexNotSupportedWrite(msr_index)),

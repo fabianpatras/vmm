@@ -70,6 +70,7 @@ pub const X86_CR4_PAE: u64 = 1 << 5;
 pub const X86_CR4_VMXE: u64 = 1 << 13;
 
 // See Intel SDM3A 2.2.1 Table 2-1
+pub const X86_IA32_EFER_SCE: u64 = 1 << 0;
 pub const X86_IA32_EFER_LME: u64 = 1 << 8;
 pub const X86_IA32_EFER_LMA: u64 = 1 << 10;
 
@@ -152,6 +153,7 @@ pub const MSR_PEBS_LD_LAT: u32 = 0x000003f6;
 pub const MSR_PEBS_FRONTEND: u32 = 0x000003f7;
 pub const MSR_PPERF: u32 = 0x0000064e;
 pub const MSR_IA32_XSS: u32 = 0x00000da0;
+pub const MSR_IA32_TSC_DEADLINE: u32 = 0x000006e0;
 
 pub const MSR_IA32_MTRRCAP: u32 = 0x000000fe;
 pub const MSR_IA32_MTRR_DEF_TYPE: u32 = 0x000002ff;
